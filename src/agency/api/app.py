@@ -1,22 +1,26 @@
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-import os
 
 from fastapi import FastAPI
 
 from agency.db.migrations import run_migrations
 from agency.status.poller import fetch_status
+from agency.api.middleware import JWTMiddleware
 
 
 def _state_dir() -> Path:
     return Path(os.environ.get("AGENCY_STATE_DIR", Path.home() / ".agency"))
 
 
-def _get_db_conn(state_dir: Path) -> sqlite3.Connection:
+def _jwt_secret() -> str:
+    return os.environ.get("AGENCY_JWT_SECRET", "")
+
+
+def get_db(state_dir: Path) -> sqlite3.Connection:
     db_path = state_dir / "agency.db"
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    return conn
+    return sqlite3.connect(db_path, check_same_thread=False)
 
 
 @asynccontextmanager
@@ -24,14 +28,15 @@ async def lifespan(app: FastAPI):
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = _get_db_conn(state_dir)
+    conn = get_db(state_dir)
     run_migrations(conn)
     app.state.db = conn
+    app.state.state_dir = state_dir
 
     cfg_path = state_dir / "agency.toml"
     if cfg_path.exists():
-        from agency.config.toml import read_config
         try:
+            from agency.config.toml import read_config
             cfg = read_config(cfg_path)
             status_url = cfg.get("status", {}).get("url")
             if status_url:
@@ -40,16 +45,22 @@ async def lifespan(app: FastAPI):
             pass
 
     yield
-
     conn.close()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Agency", version="1.0.0", lifespan=lifespan)
 
+    secret = _jwt_secret()
+    if secret:
+        app.add_middleware(JWTMiddleware, secret=secret)
+
     @app.get("/health")
     def health():
         return {"status": "ok", "version": "1.0.0"}
+
+    from agency.api.routes import tasks
+    app.include_router(tasks.router)
 
     return app
 
