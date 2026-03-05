@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agency-engine"
 version = "1.0.0"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
