@@ -36,3 +36,6 @@ addopts = "-v"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agency"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agency"]
