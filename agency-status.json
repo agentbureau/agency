@@ -1,0 +1,14 @@
+{
+  "latest_version": "1.0.0",
+  "min_supported_version": "1.0.0",
+  "updates": [],
+  "bugs_reported": [],
+  "bugs_fixed": [],
+  "primitives": [],
+  "research": [],
+  "system": {
+    "homepool_enabled": false,
+    "homepool_endpoint": null,
+    "notices": []
+  }
+}
