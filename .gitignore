@@ -208,3 +208,6 @@ __marimo__/
 
 # Git worktrees
 .worktrees/
+
+# Internal planning documents
+docs/plans/
