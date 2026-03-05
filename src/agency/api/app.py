@@ -59,8 +59,11 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "version": "1.0.0"}
 
-    from agency.api.routes import tasks
+    from agency.api.routes import tasks, projects, primitives, evolution
     app.include_router(tasks.router)
+    app.include_router(projects.router)
+    app.include_router(primitives.router)
+    app.include_router(evolution.router)
 
     return app
 

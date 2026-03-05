@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.0",
     "tomli-w>=1.0",
     "click>=8.1",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
