@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Read Agency connection details from config
+AGENCY_CONFIG="${AGENCY_STATE_DIR:-$HOME/.agency}/agency.toml"
+AGENCY_URL=$(python3 -c "
+import tomllib, sys
+with open('$AGENCY_CONFIG', 'rb') as f:
+    cfg = tomllib.load(f)
+print(f\"http://{cfg['server']['host']}:{cfg['server']['port']}\")
+")
+AGENCY_JWT="$(cat "${AGENCY_TOKEN_FILE:-$HOME/.agency-workgraph-token}")"
+PROJECT_ID="${AGENCY_PROJECT_ID:?Set AGENCY_PROJECT_ID}"
+
+PROMPT_DIR=".workgraph/agency-prompts"
+mkdir -p "$PROMPT_DIR"
+
+# Collect all open tasks
+TASK_IDS=$(wg list --status open --json | python3 -c "
+import sys, json; print('\n'.join(t['id'] for t in json.load(sys.stdin)))
+")
+
+# Build batch payload
+TASKS_JSON=$(for id in $TASK_IDS; do
+  wg show "$id" --json | python3 -c "
+import sys, json
+t = json.load(sys.stdin)
+desc = (t.get('description') or '') + ' ' + (t.get('title') or '')
+obj = {
+    'external_id': t['id'],
+    'description': desc.strip(),
+    'skills': t.get('skills') or [],
+    'deliverables': t.get('deliverables') or [],
+}
+print(json.dumps(obj))
+"
+done | python3 -c "import sys, json; print(json.dumps(list(map(json.loads, sys.stdin))))")
+
+# Send to Agency
+PACKET=$(curl -sf -X POST "$AGENCY_URL/projects/$PROJECT_ID/assign" \
+  -H "Authorization: Bearer $AGENCY_JWT" \
+  -H "Content-Type: application/json" \
+  -d "{\"tasks\": $TASKS_JSON}")
+
+# Store prompt and agency_task_id per task; set executor
+echo "$PACKET" | python3 -c "
+import sys, json, os
+packet = json.load(sys.stdin)
+prompt_dir = '.workgraph/agency-prompts'
+for ext_id, assignment in packet['assignments'].items():
+    agent_hash = assignment['agent_hash']
+    agency_task_id = assignment['agency_task_id']
+    rendered_prompt = packet['agents'][agent_hash]['rendered_prompt']
+    with open(f'{prompt_dir}/{ext_id}.prompt', 'w') as f:
+        f.write(rendered_prompt)
+    with open(f'{prompt_dir}/{ext_id}.task_id', 'w') as f:
+        f.write(agency_task_id)
+    print(f'Assigned: {ext_id} -> {agent_hash[:12]}...')
+"
+
+# Set the Agency executor on each assigned task
+for id in $TASK_IDS; do
+  if [ -f "$PROMPT_DIR/$id.prompt" ]; then
+    wg exec "$id" --set "agency-wg-executor.sh"
+  fi
+done
+
+echo "Done. Run: wg service start"

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from agency.db.primitives import find_similar
 from agency.db.compositions import upsert_agent
@@ -5,6 +6,7 @@ from agency.db.templates import list_templates
 from agency.engine.renderer import render_agent, load_default_template
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
+from agency.utils.errors import PrimitiveStoreEmpty
 
 
 def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
@@ -24,6 +26,8 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
 
     # Find relevant role components
     role_results = find_similar(db, "role_components", task_description, limit=3)
+    if not role_results:
+        raise PrimitiveStoreEmpty("No role components in primitive store")
     role_component_ids = [r["id"] for r in role_results]
     role_component_texts = [r["description"] for r in role_results]
 
@@ -73,9 +77,103 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
         clarification_behaviour=task.get("clarification_behaviour", "ask"),
     )
 
+    # Compute mean embedding vector across all selected primitives
+    all_embeddings = []
+    for r in role_results + outcome_results + tradeoff_results:
+        emb = r.get("embedding")
+        if emb:
+            vec = json.loads(emb) if isinstance(emb, str) else emb
+            all_embeddings.append(vec)
+
+    if all_embeddings:
+        n = len(all_embeddings[0])
+        mean_embedding = [sum(e[i] for e in all_embeddings) / len(all_embeddings) for i in range(n)]
+    else:
+        mean_embedding = []
+
     return {
         "agent_id": agent_id,
         "content_hash": composition_hash,
         "template_id": template_id,
         "rendered_prompt": rendered,
+        "embedding_vector": mean_embedding,
+        "primitive_ids": {
+            "role_components": role_component_ids,
+            "desired_outcomes": [desired_outcome_id] if desired_outcome_id else [],
+            "trade_off_configs": [trade_off_config_id] if trade_off_config_id else [],
+        },
     }
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = sum(x ** 2 for x in a) ** 0.5
+    mag_b = sum(x ** 2 for x in b) ** 0.5
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def deduplicate_compositions(compositions: list, threshold: float = 0.90) -> list[list[int]]:
+    assigned = [False] * len(compositions)
+    clusters = []
+    for i, comp in enumerate(compositions):
+        if assigned[i]:
+            continue
+        cluster = [i]
+        for j in range(i + 1, len(compositions)):
+            if not assigned[j]:
+                sim = cosine_similarity(comp.embedding, compositions[j].embedding)
+                if sim >= threshold:
+                    cluster.append(j)
+                    assigned[j] = True
+        clusters.append(cluster)
+        assigned[i] = True
+    return clusters
+
+
+def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
+    """Assign agents to a batch of tasks with cosine-similarity deduplication."""
+    results = []
+    for task in tasks:
+        enriched = task.description
+        if task.skills:
+            enriched += " " + " ".join(task.skills)
+        if task.deliverables:
+            enriched += " " + " ".join(task.deliverables)
+        result = assign_agent(db, task.external_id or enriched[:16], {"task_description": enriched})
+        results.append(result)
+
+    class Comp:
+        def __init__(self, embedding):
+            self.embedding = embedding
+
+    comps = [Comp(r["embedding_vector"]) for r in results]
+    clusters = deduplicate_compositions(comps)
+
+    assignments = {}
+    agents = {}
+
+    for cluster in clusters:
+        canonical_idx = cluster[0]
+        canonical = results[canonical_idx]
+        agent_hash = canonical["content_hash"]
+
+        agents[agent_hash] = {
+            "rendered_prompt": canonical["rendered_prompt"],
+            "content_hash": canonical["content_hash"],
+            "template_id": canonical["template_id"],
+            "primitive_ids": canonical["primitive_ids"],
+        }
+
+        for idx in cluster:
+            task = tasks[idx]
+            ext_id = task.external_id or str(idx)
+            assignments[ext_id] = {
+                "agency_task_id": results[idx].get("task_id", ext_id),
+                "agent_hash": agent_hash,
+            }
+
+    return {"assignments": assignments, "agents": agents}

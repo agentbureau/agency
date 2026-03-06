@@ -4,6 +4,7 @@ from agency.cli.serve import serve_command
 from agency.cli.register import register_command
 from agency.cli.primitives import primitives_command
 from agency.cli.upgrade import upgrade_command
+from agency.cli.token import token_group
 
 
 @click.group()
@@ -17,3 +18,4 @@ main.add_command(serve_command)
 main.add_command(register_command)
 main.add_command(primitives_command)
 main.add_command(upgrade_command)
+main.add_command(token_group)
