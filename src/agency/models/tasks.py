@@ -23,3 +23,26 @@ class EvaluatorResponse(BaseModel):
     template_id: str
     rendered_prompt: str
     callback_jwt: str
+
+
+class BatchTaskRequest(BaseModel):
+    external_id: str | None = None
+    description: str
+    skills: list[str] = []
+    deliverables: list[str] = []
+
+
+class BatchAssignRequest(BaseModel):
+    tasks: list[BatchTaskRequest]
+
+
+class AgentDefinition(BaseModel):
+    rendered_prompt: str
+    content_hash: str
+    template_id: str
+    primitive_ids: dict
+
+
+class BatchAssignResponse(BaseModel):
+    assignments: dict  # external_id -> {agency_task_id, agent_hash}
+    agents: dict       # agent_hash -> AgentDefinition

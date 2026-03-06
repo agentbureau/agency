@@ -17,8 +17,13 @@ def test_full_init_end_to_end(tmp_path):
         "sk-ant-test",
         "admin@example.com",
         "discretion",
-        "300",
-        "n",
+        "smtp.example.com",
+        "587",
+        "user@example.com",
+        "smtppass",
+        "user@example.com",
+        "127.0.0.1",
+        "8000",
     ]) + "\n", env={"AGENCY_STATE_DIR": str(tmp_path)})
 
     assert result.exit_code == 0, result.output

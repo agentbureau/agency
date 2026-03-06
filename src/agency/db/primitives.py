@@ -52,7 +52,7 @@ def find_similar(
         pid, desc, emb_json = row
         if emb_json:
             vec = json.loads(emb_json)
-            scored.append((cosine_similarity(query_vec, vec), pid, desc))
+            scored.append((cosine_similarity(query_vec, vec), pid, desc, vec))
     scored.sort(reverse=True)
-    return [{"id": pid, "description": desc, "score": score}
-            for score, pid, desc in scored[:limit]]
+    return [{"id": pid, "description": desc, "score": score, "embedding": vec}
+            for score, pid, desc, vec in scored[:limit]]
