@@ -24,6 +24,11 @@ def _auth(token: str) -> dict:
 
 def test_create_task_and_get_agent(client):
     token = create_task_manager_jwt(SECRET, "client-1", "inst-1", scope="task")
+    # Add primitives so assign_agent can compose an agent
+    client.post("/primitives", json={
+        "table": "role_components", "description": "summarise documents clearly",
+        "instance_id": "inst-1"
+    }, headers=_auth(token))
     resp = client.post("/tasks", json={
         "task_description": "summarise this document"
     }, headers=_auth(token))
@@ -39,6 +44,10 @@ def test_create_task_and_get_agent(client):
 
 def test_get_evaluator_has_callback_jwt(client):
     token = create_task_manager_jwt(SECRET, "client-1", "inst-1", scope="task")
+    client.post("/primitives", json={
+        "table": "role_components", "description": "summarise documents clearly",
+        "instance_id": "inst-1"
+    }, headers=_auth(token))
     resp = client.post("/tasks", json={
         "task_description": "summarise this document"
     }, headers=_auth(token))
@@ -53,6 +62,10 @@ def test_get_evaluator_has_callback_jwt(client):
 
 def test_evaluation_callback_accepted(client):
     token = create_task_manager_jwt(SECRET, "client-1", "inst-1", scope="task")
+    client.post("/primitives", json={
+        "table": "role_components", "description": "summarise documents clearly",
+        "instance_id": "inst-1"
+    }, headers=_auth(token))
     resp = client.post("/tasks", json={
         "task_description": "summarise this document"
     }, headers=_auth(token))

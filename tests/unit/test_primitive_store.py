@@ -2,11 +2,20 @@ import sqlite3
 import pytest
 from agency.db.migrations import run_migrations
 from agency.db.primitives import insert_primitive, get_primitive, find_similar
+from agency.utils.errors import PrimitiveStoreEmpty
+from agency.engine.assigner import assign_agent
 
 
 @pytest.fixture
 def db(tmp_path):
     conn = sqlite3.connect(tmp_path / "agency.db")
+    run_migrations(conn)
+    return conn
+
+
+@pytest.fixture
+def empty_db():
+    conn = sqlite3.connect(":memory:")
     run_migrations(conn)
     return conn
 
@@ -36,3 +45,8 @@ def test_find_similar_returns_results(db):
     results = find_similar(db, "role_components",
         query="measure how well tasks are done", limit=2)
     assert len(results) >= 1
+
+
+def test_assign_agent_raises_when_store_empty(empty_db):
+    with pytest.raises(PrimitiveStoreEmpty):
+        assign_agent(empty_db, "task-1", {"task_description": "do a thing"})

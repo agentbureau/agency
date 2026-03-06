@@ -31,6 +31,12 @@ def _auth(token: str) -> dict:
 def test_full_roundtrip(client):
     token = create_task_manager_jwt(SECRET, "client-1", "inst-1", scope="task")
 
+    # Add primitives required for agent assignment
+    client.post("/primitives", json={
+        "table": "role_components", "description": "write clear summaries",
+        "instance_id": "inst-1"
+    }, headers=_auth(token))
+
     # 1. Create task
     resp = client.post("/tasks", json={"task_description": "write a summary"},
                        headers=_auth(token))

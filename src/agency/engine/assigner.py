@@ -5,6 +5,7 @@ from agency.db.templates import list_templates
 from agency.engine.renderer import render_agent, load_default_template
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
+from agency.utils.errors import PrimitiveStoreEmpty
 
 
 def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
@@ -24,6 +25,8 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
 
     # Find relevant role components
     role_results = find_similar(db, "role_components", task_description, limit=3)
+    if not role_results:
+        raise PrimitiveStoreEmpty("No role components in primitive store")
     role_component_ids = [r["id"] for r in role_results]
     role_component_texts = [r["description"] for r in role_results]
 
