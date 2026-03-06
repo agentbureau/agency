@@ -80,3 +80,31 @@ def create_initial_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
     """)
+
+
+@migration
+def add_projects_and_tasks(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            client_id TEXT,
+            description TEXT,
+            admin_email TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            external_id TEXT,
+            project_id TEXT,
+            description TEXT NOT NULL,
+            output_format TEXT,
+            output_structure TEXT,
+            clarification_behaviour TEXT,
+            client_id TEXT,
+            agent_composition_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+    """)
