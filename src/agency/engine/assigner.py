@@ -103,3 +103,77 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
             "trade_off_configs": [trade_off_config_id] if trade_off_config_id else [],
         },
     }
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = sum(x ** 2 for x in a) ** 0.5
+    mag_b = sum(x ** 2 for x in b) ** 0.5
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def deduplicate_compositions(compositions: list, threshold: float = 0.90) -> list[list[int]]:
+    assigned = [False] * len(compositions)
+    clusters = []
+    for i, comp in enumerate(compositions):
+        if assigned[i]:
+            continue
+        cluster = [i]
+        for j in range(i + 1, len(compositions)):
+            if not assigned[j]:
+                sim = cosine_similarity(comp.embedding, compositions[j].embedding)
+                if sim >= threshold:
+                    cluster.append(j)
+                    assigned[j] = True
+        clusters.append(cluster)
+        assigned[i] = True
+    return clusters
+
+
+def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
+    """Assign agents to a batch of tasks with cosine-similarity deduplication."""
+    results = []
+    for task in tasks:
+        enriched = task.description
+        if task.skills:
+            enriched += " " + " ".join(task.skills)
+        if task.deliverables:
+            enriched += " " + " ".join(task.deliverables)
+        result = assign_agent(db, task.external_id or enriched[:16], {"task_description": enriched})
+        results.append(result)
+
+    class Comp:
+        def __init__(self, embedding):
+            self.embedding = embedding
+
+    comps = [Comp(r["embedding_vector"]) for r in results]
+    clusters = deduplicate_compositions(comps)
+
+    assignments = {}
+    agents = {}
+
+    for cluster in clusters:
+        canonical_idx = cluster[0]
+        canonical = results[canonical_idx]
+        agent_hash = canonical["content_hash"]
+
+        agents[agent_hash] = {
+            "rendered_prompt": canonical["rendered_prompt"],
+            "content_hash": canonical["content_hash"],
+            "template_id": canonical["template_id"],
+            "primitive_ids": canonical["primitive_ids"],
+        }
+
+        for idx in cluster:
+            task = tasks[idx]
+            ext_id = task.external_id or str(idx)
+            assignments[ext_id] = {
+                "agency_task_id": results[idx].get("task_id", ext_id),
+                "agent_hash": agent_hash,
+            }
+
+    return {"assignments": assignments, "agents": agents}
