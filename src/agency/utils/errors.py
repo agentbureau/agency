@@ -16,6 +16,11 @@ class ErrorType(IntEnum):
     TYPE_3 = 3  # Fatal — log, notify, halt
 
 
+class PrimitiveStoreEmpty(Exception):
+    """Raised when the primitive store contains no role components."""
+    pass
+
+
 class AgencyError(Exception):
     def __init__(self, message: str, error_type: ErrorType = ErrorType.TYPE_1):
         super().__init__(message)
