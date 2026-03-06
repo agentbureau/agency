@@ -20,6 +20,22 @@ def empty_db():
     return conn
 
 
+@pytest.fixture
+def db_with_primitives():
+    conn = sqlite3.connect(":memory:")
+    run_migrations(conn)
+    insert_primitive(conn, "role_components",
+                     description="write clear and concise code",
+                     instance_id="inst-1")
+    insert_primitive(conn, "desired_outcomes",
+                     description="produce working, tested code",
+                     instance_id="inst-1")
+    insert_primitive(conn, "trade_off_configs",
+                     description="quality over speed",
+                     instance_id="inst-1")
+    return conn
+
+
 def test_insert_and_retrieve(db):
     pid = insert_primitive(db, "role_components",
         description="evaluate task quality",
@@ -50,3 +66,10 @@ def test_find_similar_returns_results(db):
 def test_assign_agent_raises_when_store_empty(empty_db):
     with pytest.raises(PrimitiveStoreEmpty):
         assign_agent(empty_db, "task-1", {"task_description": "do a thing"})
+
+
+def test_assign_agent_returns_embedding_vector(db_with_primitives):
+    result = assign_agent(db_with_primitives, "t1", {"task_description": "write code"})
+    assert "embedding_vector" in result
+    assert isinstance(result["embedding_vector"], list)
+    assert len(result["embedding_vector"]) > 0

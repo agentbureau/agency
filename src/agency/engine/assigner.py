@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from agency.db.primitives import find_similar
 from agency.db.compositions import upsert_agent
@@ -76,9 +77,29 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
         clarification_behaviour=task.get("clarification_behaviour", "ask"),
     )
 
+    # Compute mean embedding vector across all selected primitives
+    all_embeddings = []
+    for r in role_results + outcome_results + tradeoff_results:
+        emb = r.get("embedding")
+        if emb:
+            vec = json.loads(emb) if isinstance(emb, str) else emb
+            all_embeddings.append(vec)
+
+    if all_embeddings:
+        n = len(all_embeddings[0])
+        mean_embedding = [sum(e[i] for e in all_embeddings) / len(all_embeddings) for i in range(n)]
+    else:
+        mean_embedding = []
+
     return {
         "agent_id": agent_id,
         "content_hash": composition_hash,
         "template_id": template_id,
         "rendered_prompt": rendered,
+        "embedding_vector": mean_embedding,
+        "primitive_ids": {
+            "role_components": role_component_ids,
+            "desired_outcomes": [desired_outcome_id] if desired_outcome_id else [],
+            "trade_off_configs": [trade_off_config_id] if trade_off_config_id else [],
+        },
     }
