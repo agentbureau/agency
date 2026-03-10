@@ -37,6 +37,7 @@ addopts = "-v"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agency"]
+artifacts = ["src/agency/skills/**"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/agency"]
