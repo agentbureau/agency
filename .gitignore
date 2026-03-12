@@ -212,3 +212,6 @@ __marimo__/
 # Internal planning documents
 docs/plans/
 CLAUDE.md
+
+# Session continuity (local-only handoff notes)
+continuity/
