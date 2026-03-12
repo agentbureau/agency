@@ -83,7 +83,26 @@
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -20)",
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/integration/test_init_wizard.py::test_init_creates_config_and_keypair -v)",
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_keypair.py tests/integration/test_init_wizard.py tests/integration/test_full_init.py::test_full_init_end_to_end -v)",
-      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -15)"
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -15)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_jwt.py -v 2>&1 | head -50)",
+      "Bash(.venv/bin/pytest tests/unit/test_jwt.py -v 2>&1 | tail -30)",
+      "Bash(.venv/bin/pytest tests/unit/test_jwt.py -v 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest /Users/vaughntan/agency/tests/unit/test_jwt.py -v 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest /Users/vaughntan/agency/tests/ --tb=no -q 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_jwt.py -v --tb=no 2>&1 | tail -15)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_jwt_middleware.py -v 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -40)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -50)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -30)",
+      "Bash(.venv/bin/pytest tests/unit/test_jwt_middleware.py -v 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_tokens_store.py -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python3 << 'EOF'\nimport sqlite3\nimport time\nfrom agency.db.migrations import run_migrations\nfrom agency.db.tokens import insert_token, list_tokens\n\nconn = sqlite3.connect\\(\":memory:\"\\)\nrun_migrations\\(conn\\)\n\ninsert_token\\(conn, jti=\"jti-a\", client_id=\"mcp\", expires_at=None\\)\ntime.sleep\\(0.1\\)\ninsert_token\\(conn, jti=\"jti-b\", client_id=\"mcp\", expires_at=None\\)\n\ntokens = list_tokens\\(conn\\)\nfor t in tokens:\n    print\\(f\"jti: {t['jti']}, created_at: {t['created_at']}\"\\)\nEOF)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_tokens_store.py::test_list_tokens_most_recent_first -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_token_cli.py -v 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_token_cli.py::test_token_create_writes_to_issued_tokens -v -s 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_hierarchy.py -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=no -q 2>&1 | tail -5)",
+      "Bash(git log:*)"
     ]
   }
 }
