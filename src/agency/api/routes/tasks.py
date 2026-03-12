@@ -63,7 +63,7 @@ def get_task_evaluator(task_id: str, request: Request):
 def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
     from agency.db.evaluations import enqueue_evaluation
     import json
-    enqueue_evaluation(request.app.state.db, json.dumps(report.model_dump()))
+    enqueue_evaluation(request.app.state.db, json.dumps(report.model_dump()), task_id=task_id)
     return {"status": "accepted", "task_id": task_id}
 
 
