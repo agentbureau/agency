@@ -34,14 +34,15 @@ def run_project_create_wizard(
     inst_timeout = notifications.get("error_notification_timeout", 1800)
     inst_attribution = output.get("attribution", True)
 
-    click.echo("\n--- Project creation wizard ---\n")
+    click.echo("\nCreate a new Agency project.\n")
 
     # --- Project name (required) ---
     name = click.prompt("Project name")
 
     # --- Inheritable fields (empty = inherit = NULL) ---
     click.echo(
-        "\nFor the following fields, press Enter to inherit the instance default (shown in brackets)."
+        "\nThe following settings inherit from your instance defaults.\n"
+        "Press enter to accept each default, or type a new value."
     )
 
     raw_email = click.prompt(
@@ -55,12 +56,11 @@ def run_project_create_wizard(
     oversight_preference = raw_oversight.strip() or None
     if oversight_preference and oversight_preference not in (
         "discretion",
-        "always",
-        "never",
+        "review",
     ):
         click.echo(
             f"  Warning: '{oversight_preference}' is not a standard value "
-            "(discretion/always/never). Storing as-is."
+            "(discretion/review). Storing as-is."
         )
 
     raw_timeout = click.prompt(
@@ -71,7 +71,7 @@ def run_project_create_wizard(
     error_notification_timeout = int(raw_timeout) if raw_timeout.strip() else None
 
     raw_attr = click.prompt(
-        f"  Attribution [{'true' if inst_attribution else 'false'}]",
+        f"  Attribution [{'on' if inst_attribution else 'off'}]",
         default="",
         show_default=False,
     )
@@ -86,14 +86,47 @@ def run_project_create_wizard(
         attribution = None
 
     # --- Optional LLM override ---
+    llm_section = cfg.get("llm", {})
+    inst_backend = llm_section.get("backend", "claude-code")
+    inst_model = llm_section.get("model", "")
+
     llm_provider = None
     llm_model = None
     llm_api_key = None
     if click.confirm("\nOverride LLM settings for this project?", default=False):
-        llm_provider = click.prompt("  LLM provider")
-        llm_model = click.prompt("  LLM model")
-        llm_api_key = click.prompt("  LLM API key", default="", hide_input=True)
-        llm_api_key = llm_api_key or None
+        if inst_backend == "claude-code":
+            raw_provider = click.prompt(
+                f"  LLM provider [claude-code]", default="", show_default=False
+            )
+            llm_provider = raw_provider.strip() or None
+            raw_model = click.prompt(
+                f"  Model [{inst_model}]", default="", show_default=False
+            )
+            llm_model = raw_model.strip() or None
+            if llm_provider and llm_provider not in ("claude-code",):
+                raw_key = click.prompt("  API key", default="", show_default=False)
+                llm_api_key = raw_key.strip() or None
+        else:
+            raw_provider = click.prompt(
+                f"  LLM provider [{inst_backend}]", default="", show_default=False
+            )
+            if raw_provider.strip() == "claude-code":
+                click.echo(
+                    "  Error: claude-code is an instance-level backend only; "
+                    "not valid at project level."
+                )
+                raise SystemExit(1)
+            llm_provider = raw_provider.strip() or None
+            raw_model = click.prompt(
+                f"  Model [{inst_model}]", default="", show_default=False
+            )
+            llm_model = raw_model.strip() or None
+            raw_key = click.prompt(
+                "  API key (leave blank to inherit instance key)",
+                default="",
+                show_default=False,
+            )
+            llm_api_key = raw_key.strip() or None
 
     # --- Insert into DB ---
     project_id = create_project(
@@ -115,7 +148,7 @@ def run_project_create_wizard(
     click.echo(f"  ID: {project_id}")
 
     # --- Optionally set as default project ---
-    if click.confirm("Set as default project?", default=False):
+    if click.confirm("\nSet as default project for this Agency instance?", default=False):
         _set_default_project_in_toml(toml_path, project_id)
         click.echo(f"  Default project set to {project_id} in agency.toml")
 
@@ -142,7 +175,8 @@ def project_create_command():
 
     if not is_schema_current(db_path):
         click.echo(
-            "Error: database not initialised. Run `agency serve` first to apply migrations.",
+            "Error: Agency database not found or schema not current. "
+            "Run 'agency serve' at least once first.",
             err=True,
         )
         raise SystemExit(1)
