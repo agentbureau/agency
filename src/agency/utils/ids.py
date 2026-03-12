@@ -22,6 +22,10 @@ def new_uuid() -> str:
     return str(_uuid7())
 
 
+def generate_uuid_v7() -> str:
+    return str(_uuid7())
+
+
 def new_template_id(template_type: str) -> str:
     prefix = "agt" if template_type == "task_agent" else "evt"
     return f"{prefix}-{_uuid7()}"
