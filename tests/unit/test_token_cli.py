@@ -1,52 +1,112 @@
+import sqlite3
+import os
 import pytest
 from click.testing import CliRunner
+from agency.auth.keypair import generate_keypair, load_private_key
+from agency.db.migrations import run_migrations
+from agency.db.tokens import get_token, list_tokens, insert_token
 from agency.cli.token import token_group
-from agency.config.toml import write_config
-from agency.utils.ids import new_uuid
-
-
-def _write_config_with_secret(tmp_path, secret: str) -> None:
-    cfg = {
-        "instance_id": new_uuid(),
-        "llm_endpoint": "https://api.anthropic.com/v1",
-        "llm_model": "claude-sonnet-4-6",
-        "llm_api_key": "sk-test",
-        "contact_email": "test@example.com",
-        "oversight_preference": "discretion",
-        "auth": {"jwt_secret": secret},
-        "server": {"host": "127.0.0.1", "port": 8000},
-        "email": {
-            "smtp_host": "smtp.example.com",
-            "smtp_port": 587,
-            "smtp_username": "u",
-            "smtp_password": "p",
-            "sender_address": "u@example.com",
-        },
-    }
-    write_config(cfg, tmp_path / "agency.toml")
 
 
 @pytest.fixture
-def runner():
-    return CliRunner()
+def setup(tmp_path):
+    db_path = str(tmp_path / "agency.db")
+    conn = sqlite3.connect(db_path)
+    run_migrations(conn)
+    conn.close()
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    priv = str(keys_dir / "agency.ed25519.pem")
+    pub = str(keys_dir / "agency.ed25519.pub.pem")
+    generate_keypair(priv, pub)
+    return CliRunner(), db_path, priv, str(tmp_path)
 
 
-def test_token_create_prints_jwt(runner, tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
-    _write_config_with_secret(tmp_path, "testsecret" * 7)
-    result = runner.invoke(token_group, ["create", "--client-id", "superpowers"])
-    assert result.exit_code == 0, result.output
-    token = result.output.strip()
-    assert len(token) > 20
+def test_token_create_writes_to_issued_tokens(setup, monkeypatch):
+    runner, db_path, priv_path, state_dir = setup
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    with open(os.path.join(state_dir, "agency.toml"), "w") as f:
+        f.write('[server]\nhost = "127.0.0.1"\nport = 8000\n')
+        f.write('instance_id = "inst-test-1"\n')
+    result = runner.invoke(token_group, ["create", "--client-id", "test-client"])
+    assert result.exit_code == 0
+    conn = sqlite3.connect(db_path)
+    tokens = list_tokens(conn)
+    assert len(tokens) == 1
+    assert tokens[0]["client_id"] == "test-client"
+    assert tokens[0]["revoked"] == 0
 
 
-def test_token_create_with_expiry(runner, tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
-    secret = "testsecret" * 7
-    _write_config_with_secret(tmp_path, secret)
-    result = runner.invoke(token_group, ["create", "--client-id", "workgraph",
-                                          "--expires-in", "3600"])
-    assert result.exit_code == 0, result.output
+def test_token_list_shows_tokens(setup, monkeypatch):
+    runner, db_path, priv_path, state_dir = setup
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    conn = sqlite3.connect(db_path)
+    insert_token(conn, "jti-abc123de", "mcp", None)
+    conn.close()
+    result = runner.invoke(token_group, ["list"])
+    assert result.exit_code == 0
+    assert "mcp" in result.output
+    assert "jti-abc1" in result.output  # first 8 chars
+
+
+def test_token_revoke_requires_confirmation(setup, monkeypatch):
+    runner, db_path, priv_path, state_dir = setup
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    conn = sqlite3.connect(db_path)
+    insert_token(conn, "jti-1", "mcp", None)
+    conn.close()
+    # Wrong confirmation
+    result = runner.invoke(token_group, ["revoke", "--client-id", "mcp"], input="no\n")
+    assert result.exit_code == 0
+    conn = sqlite3.connect(db_path)
+    assert get_token(conn, "jti-1")["revoked"] == 0
+    # Correct confirmation
+    result = runner.invoke(token_group, ["revoke", "--client-id", "mcp"],
+                           input="yes, cancel every token on this instance\n")
+    assert result.exit_code == 0
+    conn = sqlite3.connect(db_path)
+    assert get_token(conn, "jti-1")["revoked"] == 1
+
+
+def test_token_create_fails_without_database(monkeypatch, tmp_path):
+    fresh_state = tmp_path / "fresh_state"
+    fresh_state.mkdir()
+    keys_dir = fresh_state / "keys"
+    keys_dir.mkdir()
+    generate_keypair(str(keys_dir / "agency.ed25519.pem"), str(keys_dir / "agency.ed25519.pub.pem"))
+    sqlite3.connect(str(fresh_state / "agency.db")).close()
+    with open(str(fresh_state / "agency.toml"), "w") as f:
+        f.write('instance_id = "inst-1"\n[server]\nhost = "127.0.0.1"\nport = 8000\n')
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(fresh_state))
+    runner = CliRunner()
+    result = runner.invoke(token_group, ["create", "--client-id", "test"])
+    assert result.exit_code != 0 or "database not initialised" in result.output.lower()
+    assert "agency serve" in result.output
+
+
+def test_token_create_with_expires_in(setup, monkeypatch):
     import jwt as pyjwt
-    payload = pyjwt.decode(result.output.strip(), secret, algorithms=["HS256"])
+    runner, db_path, priv_path, state_dir = setup
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    with open(os.path.join(state_dir, "agency.toml"), "w") as f:
+        f.write('[server]\nhost = "127.0.0.1"\nport = 8000\ninstance_id = "inst-test-1"\n')
+    result = runner.invoke(token_group, ["create", "--client-id", "test-client", "--expires-in", "3600"])
+    assert result.exit_code == 0
+    token_str = result.output.strip()
+    payload = pyjwt.decode(token_str, options={"verify_signature": False})
     assert "exp" in payload
+    assert payload["exp"] - payload["iat"] == 3600
+    conn = sqlite3.connect(db_path)
+    tokens = list_tokens(conn)
+    assert tokens[0]["expires_at"] is not None
+
+
+def test_token_revoke_prints_cancellation_message(setup, monkeypatch):
+    runner, db_path, priv_path, state_dir = setup
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    conn = sqlite3.connect(db_path)
+    insert_token(conn, "jti-x", "mcp", None)
+    conn.close()
+    result = runner.invoke(token_group, ["revoke", "--client-id", "mcp"], input="nope\n")
+    assert result.exit_code == 0
+    assert "Cancelled" in result.output or "No tokens were revoked" in result.output
