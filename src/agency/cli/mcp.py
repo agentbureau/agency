@@ -30,7 +30,7 @@ def _read_toml_config() -> dict:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except (FileNotFoundError, Exception):
+    except Exception:
         return {}
 
 
@@ -55,15 +55,16 @@ def _read_mcp_token() -> str:
     try:
         with open(token_file) as f:
             token = f.read().strip()
-        if not token:
-            raise ValueError("Token file is empty")
-        return token
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError:
+        token = ""
+    if not token:
         print(
-            f"Error: Cannot read MCP token from {token_file}: {e}",
+            f"Error: token file not found at {token_file}. "
+            f"Run 'agency token create --client-id mcp > {token_file}' first.",
             file=sys.stderr,
         )
         sys.exit(1)
+    return token
 
 
 def _get_agency_url() -> str:
@@ -226,7 +227,16 @@ async def _run_mcp_server():
                         },
                         "tasks": {
                             "type": "array",
-                            "items": {"type": "object"},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "external_id": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "skills": {"type": "array", "items": {"type": "string"}},
+                                    "deliverables": {"type": "array", "items": {"type": "string"}},
+                                },
+                                "required": ["external_id", "description"],
+                            },
                             "description": "List of task objects to assign",
                         },
                     },
