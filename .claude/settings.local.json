@@ -58,7 +58,32 @@
       "Bash(find /Users/vaughntan/Dropbox/notknowing -name \"2026-03-06*\" 2>/dev/null; find /Users/vaughntan/Dropbox/notknowing -type d -name \"daily*\" -o -type d -name \"journal*\" -o -type d -name \"notes\" 2>/dev/null | head -10)",
       "Bash(git checkout -b feature/agency-v1.1.0 && git worktree add .worktrees/agency-v1.1.0 feature/agency-v1.1.0)",
       "Bash(git checkout main && git worktree add .worktrees/agency-v1.1.0 feature/agency-v1.1.0)",
-      "Bash(cp /Users/vaughntan/agency/agency-internal/PRDs/agency-PRD-v1.1.0-2026-03-06T1104.md /Users/vaughntan/Dropbox/notknowing/agency/PRDs/agency-PRD-v1.1.0-2026-03-06T1104.md && cp /Users/vaughntan/agency/agency-internal/PRDs/agency-PRD-v1.2.0-2026-03-06T1134.md /Users/vaughntan/Dropbox/notknowing/agency/PRDs/agency-PRD-v1.2.0-2026-03-06T1134.md)"
+      "Bash(cp /Users/vaughntan/agency/agency-internal/PRDs/agency-PRD-v1.1.0-2026-03-06T1104.md /Users/vaughntan/Dropbox/notknowing/agency/PRDs/agency-PRD-v1.1.0-2026-03-06T1104.md && cp /Users/vaughntan/agency/agency-internal/PRDs/agency-PRD-v1.2.0-2026-03-06T1134.md /Users/vaughntan/Dropbox/notknowing/agency/PRDs/agency-PRD-v1.2.0-2026-03-06T1134.md)",
+      "Bash(python -c \"import agency; print\\(agency.__version__\\)\" 2>/dev/null || cat src/agency/__init__.py | head -5)",
+      "Bash(git checkout:*)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pip install:*)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pip show:*)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python -c \"from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; print\\('cryptography OK'\\)\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python -c \"import jwt; print\\('pyjwt version:', jwt.__version__\\); assert tuple\\(int\\(x\\) for x in jwt.__version__.split\\('.'\\)[:2]\\) >= \\(2, 4\\), 'pyjwt too old'\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python -c \"import mcp; print\\('mcp OK'\\)\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_migrations.py::test_issued_tokens_table_exists -v 2>&1 | tail -20)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_migrations.py -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python -c \"\nimport sqlite3, tempfile, os\nfrom agency.db.migrations import run_migrations\nwith tempfile.TemporaryDirectory\\(\\) as d:\n    conn = sqlite3.connect\\(os.path.join\\(d, 't.db'\\)\\)\n    run_migrations\\(conn\\)\n    cols = {r[1]: r[4] for r in conn.execute\\('PRAGMA table_info\\(projects\\)'\\).fetchall\\(\\)}\n    print\\('permission_block default:', cols.get\\('permission_block'\\)\\)\n\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v --tb=short 2>&1 | tail -60)",
+      "Bash(.venv/bin/pytest tests/ -v --tb=short 2>&1 | tail -60)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v --tb=short 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v --tb=short 2>&1; echo \"EXIT:$?\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_migrations.py -v --tb=short 2>&1; echo \"EXIT:$?\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v --tb=short; echo \"EXIT:$?\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short 2>&1; echo \"DONE\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1; echo \"EXIT:$?\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short 2>&1 | tail -30)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/python -c \"\nimport sqlite3, tempfile, os\nfrom agency.db.migrations import run_migrations, is_schema_current\n\nwith tempfile.TemporaryDirectory\\(\\) as d:\n    db = os.path.join\\(d, 'test.db'\\)\n    conn = sqlite3.connect\\(db\\)\n    run_migrations\\(conn\\)\n\n    tables = {r[0] for r in conn.execute\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table'\\\\\"\\).fetchall\\(\\)}\n    views = {r[0] for r in conn.execute\\(\\\\\"SELECT name FROM sqlite_master WHERE type='view'\\\\\"\\).fetchall\\(\\)}\n    print\\('Tables:', sorted\\(tables\\)\\)\n    print\\('Views:', sorted\\(views\\)\\)\n\n    for t in ['role_components', 'desired_outcomes', 'trade_off_configs', 'agents', 'projects', 'issued_tokens', 'pending_evaluations', 'primitive_mutations']:\n        cols = [\\(r[1], r[4]\\) for r in conn.execute\\(f'PRAGMA table_info\\({t}\\)'\\).fetchall\\(\\)]\n        print\\(f'{t}:', cols\\)\n\n    print\\('is_schema_current\\(db\\):', is_schema_current\\(db\\)\\)\n    print\\('is_schema_current\\(missing\\):', is_schema_current\\('/tmp/nonexistent999.db'\\)\\)\n    conn.close\\(\\)\n\")",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_keypair.py -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -20)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/integration/test_init_wizard.py::test_init_creates_config_and_keypair -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_keypair.py tests/integration/test_init_wizard.py tests/integration/test_full_init.py::test_full_init_end_to_end -v)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=short -q 2>&1 | tail -15)"
     ]
   }
 }

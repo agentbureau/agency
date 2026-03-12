@@ -80,8 +80,8 @@ Agency stores all state in:
 
     keys_dir = state_dir / "keys"
     keys_dir.mkdir(parents=True, exist_ok=True)
-    private_key_path = str(keys_dir / "agency.pem")
-    public_key_path = str(keys_dir / "agency.pub.pem")
+    private_key_path = str(keys_dir / "agency.ed25519.pem")
+    public_key_path = str(keys_dir / "agency.ed25519.pub.pem")
     generate_keypair(private_key_path, public_key_path)
     write_config(cfg, cfg_path)
 

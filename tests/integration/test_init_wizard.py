@@ -32,8 +32,8 @@ def test_init_creates_config_and_keypair(tmp_path, runner):
                            env={"AGENCY_STATE_DIR": str(tmp_path)})
     assert result.exit_code == 0, result.output
     assert (tmp_path / "agency.toml").exists()
-    assert (tmp_path / "keys" / "agency.pem").exists()
-    assert (tmp_path / "keys" / "agency.pub.pem").exists()
+    assert (tmp_path / "keys" / "agency.ed25519.pem").exists()
+    assert (tmp_path / "keys" / "agency.ed25519.pub.pem").exists()
 
 
 def test_init_writes_jwt_secret(runner, tmp_path):
