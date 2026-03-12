@@ -143,7 +143,7 @@ def add_projects_and_tasks(conn: sqlite3.Connection) -> None:
             llm_model TEXT,
             llm_api_key TEXT,
             homepool_retry_max_interval INTEGER,
-            permission_block TEXT NOT NULL DEFAULT '1400000000006',
+            permission_block TEXT NOT NULL DEFAULT '14000000000060400000000006',
             attribution INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
