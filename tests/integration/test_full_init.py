@@ -9,22 +9,24 @@ from click.testing import CliRunner
 from agency.cli.init import init_command
 
 
+def _wizard_input() -> str:
+    return "\n".join([
+        "claude-code",          # backend
+        "claude-sonnet-4-6",    # model
+        "admin@example.com",    # contact email
+        "discretion",           # oversight
+        "1800",                 # error_notification_timeout
+        "",                     # smtp host (skip)
+        "127.0.0.1",            # server host
+        "8000",                 # server port
+    ]) + "\n"
+
+
 def test_full_init_end_to_end(tmp_path):
     runner = CliRunner()
-    result = runner.invoke(init_command, catch_exceptions=False, input="\n".join([
-        "https://api.anthropic.com/v1",
-        "claude-sonnet-4-6",
-        "sk-ant-test",
-        "admin@example.com",
-        "discretion",
-        "smtp.example.com",
-        "587",
-        "user@example.com",
-        "smtppass",
-        "user@example.com",
-        "127.0.0.1",
-        "8000",
-    ]) + "\n", env={"AGENCY_STATE_DIR": str(tmp_path)})
+    result = runner.invoke(init_command, catch_exceptions=False,
+                           input=_wizard_input(),
+                           env={"AGENCY_STATE_DIR": str(tmp_path)})
 
     assert result.exit_code == 0, result.output
 
@@ -32,8 +34,8 @@ def test_full_init_end_to_end(tmp_path):
     assert (tmp_path / "agency.toml").exists()
     from agency.config.toml import read_config
     cfg = read_config(tmp_path / "agency.toml")
-    assert cfg["llm_endpoint"] == "https://api.anthropic.com/v1"
-    assert cfg["contact_email"] == "admin@example.com"
+    assert cfg["llm"]["backend"] == "claude-code"
+    assert cfg["notifications"]["contact_email"] == "admin@example.com"
     assert cfg["instance_id"]  # UUID generated
 
     # Keypair present
@@ -44,15 +46,9 @@ def test_full_init_end_to_end(tmp_path):
 def test_init_then_serve_initialises_db(tmp_path):
     """After init, starting the server should create and migrate the DB."""
     runner = CliRunner()
-    runner.invoke(init_command, catch_exceptions=False, input="\n".join([
-        "https://api.anthropic.com/v1",
-        "claude-sonnet-4-6",
-        "sk-ant-test",
-        "admin@example.com",
-        "discretion",
-        "300",
-        "n",
-    ]) + "\n", env={"AGENCY_STATE_DIR": str(tmp_path)})
+    runner.invoke(init_command, catch_exceptions=False,
+                  input=_wizard_input(),
+                  env={"AGENCY_STATE_DIR": str(tmp_path)})
 
     os.environ["AGENCY_STATE_DIR"] = str(tmp_path)
     try:
