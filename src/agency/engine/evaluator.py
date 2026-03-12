@@ -12,7 +12,7 @@ def build_evaluator(
     db: sqlite3.Connection,
     task_id: str,
     task: dict,
-    jwt_secret: str,
+    private_key,
     instance_id: str,
 ) -> dict:
     """
@@ -54,14 +54,16 @@ def build_evaluator(
 
     composition_hash = content_hash("eval:" + "".join(sorted(role_component_ids)))
 
-    callback_jwt = create_evaluator_jwt(
-        secret=jwt_secret,
-        instance_id=instance_id,
-        client_id=client_id or "",
-        project_id=project_id or "",
-        task_id=task_id,
-        expiry_seconds=86400,
-    )
+    if private_key is not None:
+        callback_jwt = create_evaluator_jwt(
+            private_key,
+            instance_id=instance_id,
+            client_id=client_id or "",
+            project_id=project_id or "",
+            task_id=task_id,
+        )
+    else:
+        callback_jwt = ""
 
     templates = list_templates(db, template_type="evaluator", instance_id=instance_id)
     if templates:

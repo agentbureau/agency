@@ -1,4 +1,3 @@
-import os
 from fastapi import APIRouter, Request, HTTPException
 from agency.models.tasks import TaskRequest, AgentResponse, EvaluatorResponse
 from agency.models.evaluations import EvaluationReport
@@ -52,11 +51,9 @@ def get_task_evaluator(task_id: str, request: Request):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     task_for_assigner = {**task, "task_description": task.get("description", "")}
-    # jwt_secret stored in app.state after Task 11; fall back to env var for compat
-    secret = getattr(request.app.state, "jwt_secret",
-                     os.environ.get("AGENCY_JWT_SECRET", ""))
+    private_key = getattr(request.app.state, "private_key", None)
     instance_id = str(request.app.state.state_dir)
-    return build_evaluator(request.app.state.db, task_id, task_for_assigner, secret, instance_id)
+    return build_evaluator(request.app.state.db, task_id, task_for_assigner, private_key, instance_id)
 
 
 @router.post("/{task_id}/evaluation", status_code=202)
