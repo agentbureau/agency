@@ -13,6 +13,7 @@ def insert_primitive(
     table: str,
     description: str,
     instance_id: str,
+    name: str = "",
     client_id: str | None = None,
     project_id: str | None = None,
 ) -> str:
@@ -20,11 +21,13 @@ def insert_primitive(
     pid = new_uuid()
     hash_ = content_hash(description)
     vec = embed(description)
+    if not name:
+        name = description[:80]
     conn.execute(
         f"""INSERT INTO {table}
-            (id, description, content_hash, instance_id, client_id, project_id, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (pid, description, hash_, instance_id, client_id, project_id, json.dumps(vec)),
+            (id, name, description, content_hash, instance_id, client_id, project_id, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (pid, name, description, hash_, instance_id, client_id, project_id, json.dumps(vec)),
     )
     conn.commit()
     return pid

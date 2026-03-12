@@ -28,20 +28,24 @@ def run_migrations(conn: sqlite3.Connection) -> None:
 
 
 def is_schema_current(db_path: str) -> bool:
-    """Return True if the database exists and schema is current (has been migrated at least once)."""
+    """Return True if the database has been initialized with the v1.2.0 schema
+    (issued_tokens table exists). Used by CLI commands to detect whether
+    'agency serve' has been run at least once."""
     import os
     if not os.path.exists(db_path):
         return False
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='issued_tokens'"
         )
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
+        return cursor.fetchone() is not None
     except sqlite3.DatabaseError:
         return False
+    finally:
+        if conn:
+            conn.close()
 
 
 # Import schema to register migrations
