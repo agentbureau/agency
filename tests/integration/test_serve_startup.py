@@ -24,9 +24,20 @@ def _write_minimal_config(tmp_path) -> None:
     write_config(cfg, tmp_path / "agency.toml")
 
 
+def _setup_keypair(tmp_path) -> None:
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir(exist_ok=True)
+    from agency.auth.keypair import generate_keypair
+    generate_keypair(
+        str(keys_dir / "agency.ed25519.pem"),
+        str(keys_dir / "agency.ed25519.pub.pem"),
+    )
+
+
 def test_serve_startup_runs_migrations(tmp_path, monkeypatch):
     """App startup runs migrations and /health returns ok."""
     monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    _setup_keypair(tmp_path)
     from agency.api.app import create_app
     app = create_app()
     with TestClient(app) as client:
@@ -36,27 +47,22 @@ def test_serve_startup_runs_migrations(tmp_path, monkeypatch):
     assert (tmp_path / "agency.db").exists()
 
 
-def test_serve_startup_no_public_key_bypasses_auth(tmp_path, monkeypatch):
-    """When no key file exists, public_key is None and auth is bypassed."""
-    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
-    from agency.api.app import create_app
-    app = create_app()
-    with TestClient(app) as c:
-        assert app.state.public_key is None
-
-
 def test_serve_startup_loads_public_key_when_present(tmp_path, monkeypatch):
     """When key files exist, public_key is loaded into app.state."""
     monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
-    keys_dir = tmp_path / "keys"
-    keys_dir.mkdir()
-    from agency.auth.keypair import generate_keypair
-    generate_keypair(
-        str(keys_dir / "agency.ed25519.pem"),
-        str(keys_dir / "agency.ed25519.pub.pem"),
-    )
+    _setup_keypair(tmp_path)
     from agency.api.app import create_app
     app = create_app()
     with TestClient(app) as c:
         assert app.state.public_key is not None
         assert app.state.private_key is not None
+
+
+def test_serve_startup_fails_if_public_key_missing(tmp_path, monkeypatch):
+    """Startup aborts with RuntimeError if Ed25519 public key file is absent."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    from agency.api.app import create_app
+    with pytest.raises(Exception, match="[Pp]ublic key|agency init"):
+        app = create_app()
+        with TestClient(app):
+            pass

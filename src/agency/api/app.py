@@ -23,9 +23,13 @@ def get_db(state_dir: Path) -> sqlite3.Connection:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger = logging.getLogger(__name__)
+
+    # Step 1: Resolve AGENCY_STATE_DIR, confirm agency.toml exists
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
 
+    # Step 2: Load and parse agency.toml
     cfg = {}
     cfg_path = state_dir / "agency.toml"
     if cfg_path.exists():
@@ -34,19 +38,31 @@ async def lifespan(app: FastAPI):
         except ConfigError:
             pass
 
-    conn = get_db(state_dir)
-    run_migrations(conn)
-
-    # Load Ed25519 keypair for JWT signing/verification
+    # Step 3: Load Ed25519 public key — REQUIRED; abort with clear error if missing
     pub_key_path = state_dir / "keys" / "agency.ed25519.pub.pem"
     priv_key_path = state_dir / "keys" / "agency.ed25519.pem"
-    public_key = None
+    if not pub_key_path.exists():
+        raise RuntimeError(
+            f"Ed25519 public key not found at {pub_key_path}. "
+            "Run 'agency init' to generate keypair."
+        )
+    from agency.auth.keypair import load_public_key, load_private_key
+    public_key = load_public_key(str(pub_key_path))
     private_key = None
-    if pub_key_path.exists():
-        from agency.auth.keypair import load_public_key, load_private_key
-        public_key = load_public_key(str(pub_key_path))
-        if priv_key_path.exists():
-            private_key = load_private_key(str(priv_key_path))
+    if priv_key_path.exists():
+        private_key = load_private_key(str(priv_key_path))
+
+    # Step 4: Open SQLite; create if absent
+    conn = get_db(state_dir)
+
+    # Step 5: Enable WAL mode — log warning on failure, do NOT abort
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except Exception as e:
+        logger.warning("WAL mode could not be enabled: %s", e)
+
+    # Step 6: Run migrations
+    run_migrations(conn)
 
     app.state.db = conn
     app.state.state_dir = state_dir
@@ -75,9 +91,6 @@ def create_app() -> FastAPI:
             return await call_next(request)
 
         public_key = getattr(request.app.state, "public_key", None)
-        if public_key is None:
-            # No public key configured — bypass auth (dev/migration mode)
-            return await call_next(request)
 
         conn = request.app.state.db
         auth = request.headers.get("Authorization", "")
