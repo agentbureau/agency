@@ -102,7 +102,24 @@
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_token_cli.py::test_token_create_writes_to_issued_tokens -v -s 2>&1)",
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_hierarchy.py -v)",
       "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ --tb=no -q 2>&1 | tail -5)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(git pull:*)",
+      "Bash(.venv/bin/pytest tests/unit/test_config.py -v 2>&1 | tail -40)",
+      "Bash(.venv/bin/pytest tests/unit/test_config.py -v 2>&1)",
+      "Bash(.venv/bin/pytest --tb=short 2>&1 | tail -30)",
+      "Bash(git stash:*)",
+      "Bash(.venv/bin/pytest tests/integration/test_init_wizard.py -v --tb=short 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_app_startup.py tests/integration/test_serve_startup.py -v 2>&1 | tail -50)",
+      "Bash(.venv/bin/pytest tests/integration/test_init_wizard.py tests/integration/test_full_init.py -v --tb=short 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/integration/ -v 2>&1 | tail -60)",
+      "Bash(.venv/bin/pytest --tb=short 2>&1 | tail -35)",
+      "Bash(.venv/bin/pytest tests/integration/test_evaluator_callback.py --tb=line 2>&1 | tail -15)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/unit/test_app_startup.py tests/integration/ -v --tb=short 2>&1 | tail -60)",
+      "Bash(.venv/bin/pytest --tb=short -q 2>&1 | tail -20)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest --tb=short -q 2>&1 | tail -20)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v 2>&1 | tail -40)",
+      "Bash(.venv/bin/python -m agency.cli token --help 2>&1 || .venv/bin/agency token --help 2>&1)",
+      "Bash(/Users/vaughntan/agency/.venv/bin/pytest tests/ -v 2>&1 | tail -10)"
     ]
   }
 }
