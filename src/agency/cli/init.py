@@ -79,7 +79,10 @@ Agency stores all state in:
     })
 
     keys_dir = state_dir / "keys"
-    generate_keypair(keys_dir)
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    private_key_path = str(keys_dir / "agency.pem")
+    public_key_path = str(keys_dir / "agency.pub.pem")
+    generate_keypair(private_key_path, public_key_path)
     write_config(cfg, cfg_path)
 
     click.echo(f"\n✓ Config written to {cfg_path}")

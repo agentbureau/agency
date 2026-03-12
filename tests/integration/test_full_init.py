@@ -37,8 +37,8 @@ def test_full_init_end_to_end(tmp_path):
     assert cfg["instance_id"]  # UUID generated
 
     # Keypair present
-    assert (tmp_path / "keys" / "agency.ed25519").exists()
-    assert (tmp_path / "keys" / "agency.ed25519.pub").exists()
+    assert (tmp_path / "keys" / "agency.pem").exists()
+    assert (tmp_path / "keys" / "agency.pub.pem").exists()
 
 
 def test_init_then_serve_initialises_db(tmp_path):
