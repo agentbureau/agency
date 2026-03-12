@@ -27,5 +27,22 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             conn.commit()
 
 
+def is_schema_current(db_path: str) -> bool:
+    """Return True if the database exists and schema is current (has been migrated at least once)."""
+    import os
+    if not os.path.exists(db_path):
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='issued_tokens'"
+        )
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except sqlite3.DatabaseError:
+        return False
+
+
 # Import schema to register migrations
 import agency.db.schema  # noqa: F401, E402
