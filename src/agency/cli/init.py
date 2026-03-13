@@ -432,10 +432,14 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict):
 
     # Step 2.3 -- Install starter primitives
     _step_header(2, 3, 6)
-    conn = sqlite3.connect(db_path)
-    run_migrations(conn)
-    prim_count = conn.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
-    conn.close()
+    try:
+        conn = sqlite3.connect(db_path)
+        run_migrations(conn)
+        prim_count = conn.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
+        conn.close()
+    except Exception as e:
+        failed.append(f"Primitive check: {e}")
+        prim_count = -1
     if prim_count > 0:
         click.echo(
             f"Primitives already installed ({prim_count} role components)."
@@ -664,10 +668,10 @@ def _step_create_integration_tokens(
             (client_id,),
         )
         existing_rows = cursor.fetchall()
-        file_exists = (
-            os.path.isfile(token_path)
-            and bool(open(token_path).read().strip())
-        )
+        file_exists = False
+        if os.path.isfile(token_path):
+            with open(token_path) as fh:
+                file_exists = bool(fh.read().strip())
 
         if existing_rows and file_exists:
             click.echo(
