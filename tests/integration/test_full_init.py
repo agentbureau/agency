@@ -1,6 +1,6 @@
 """
-Task 39: Full agency init integration test.
-End-to-end: run agency init, verify config + keypair + DB initialized.
+Full agency init integration test.
+End-to-end: run agency init, verify config + keypair created.
 """
 import os
 import sqlite3
@@ -10,15 +10,18 @@ from agency.cli.init import init_command
 
 
 def _wizard_input() -> str:
+    """Input for API backend through the new two-phase wizard (Phase 1 only)."""
     return "\n".join([
-        "claude-code",          # backend
+        "",                     # press enter to begin
+        "2",                    # select API backend
         "claude-sonnet-4-6",    # model
+        "sk-test-key",          # api key
         "admin@example.com",    # contact email
-        "discretion",           # oversight
-        "1800",                 # error_notification_timeout
-        "",                     # smtp host (skip)
-        "127.0.0.1",            # server host
-        "8000",                 # server port
+        "",                     # default timeout (1800)
+        "1",                    # discretion
+        "n",                    # no smtp
+        "n",                    # no MCP registration
+        "n",                    # don't continue to phase 2
     ]) + "\n"
 
 
@@ -26,7 +29,8 @@ def test_full_init_end_to_end(tmp_path):
     runner = CliRunner()
     result = runner.invoke(init_command, catch_exceptions=False,
                            input=_wizard_input(),
-                           env={"AGENCY_STATE_DIR": str(tmp_path)})
+                           env={"AGENCY_STATE_DIR": str(tmp_path),
+                                "HOME": str(tmp_path)})
 
     assert result.exit_code == 0, result.output
 
@@ -34,7 +38,7 @@ def test_full_init_end_to_end(tmp_path):
     assert (tmp_path / "agency.toml").exists()
     from agency.config.toml import read_config
     cfg = read_config(tmp_path / "agency.toml")
-    assert cfg["llm"]["backend"] == "claude-code"
+    assert cfg["llm"]["backend"] == "api"
     assert cfg["notifications"]["contact_email"] == "admin@example.com"
     assert cfg["instance_id"]  # UUID generated
 
@@ -48,7 +52,8 @@ def test_init_then_serve_initialises_db(tmp_path):
     runner = CliRunner()
     runner.invoke(init_command, catch_exceptions=False,
                   input=_wizard_input(),
-                  env={"AGENCY_STATE_DIR": str(tmp_path)})
+                  env={"AGENCY_STATE_DIR": str(tmp_path),
+                       "HOME": str(tmp_path)})
 
     os.environ["AGENCY_STATE_DIR"] = str(tmp_path)
     try:
