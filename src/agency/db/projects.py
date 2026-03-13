@@ -8,12 +8,27 @@ def create_project(
     client_id: str | None,
     description: str | None,
     admin_email: str | None,
+    *,
+    contact_email: str | None = None,
+    oversight_preference: str | None = None,
+    error_notification_timeout: int | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_api_key: str | None = None,
+    attribution: int | None = None,
 ) -> str:
     pid = new_uuid()
     conn.execute(
-        """INSERT INTO projects (id, name, client_id, description, admin_email)
-           VALUES (?, ?, ?, ?, ?)""",
-        (pid, name, client_id, description, admin_email),
+        """INSERT INTO projects
+           (id, name, client_id, description, admin_email,
+            contact_email, oversight_preference, error_notification_timeout,
+            llm_provider, llm_model, llm_api_key, attribution)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            pid, name, client_id, description, admin_email,
+            contact_email, oversight_preference, error_notification_timeout,
+            llm_provider, llm_model, llm_api_key, attribution,
+        ),
     )
     conn.commit()
     return pid

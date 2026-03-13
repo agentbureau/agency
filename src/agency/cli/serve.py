@@ -39,8 +39,9 @@ def serve_command(host: str | None, port: int | None, reload: bool):
             write_config(cfg, cfg_path)
 
     uvicorn.run(
-        "agency.api.app:app",
+        "agency.api.app:create_app",
         host=resolved_host,
         port=resolved_port,
         reload=reload,
+        factory=True,
     )

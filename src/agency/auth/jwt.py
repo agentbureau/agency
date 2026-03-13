@@ -1,40 +1,20 @@
-import jwt as pyjwt
-import uuid
+"""JWT creation and verification using EdDSA (Ed25519) asymmetric signing."""
 import time
+import jwt
 
 
-class JWTError(Exception):
-    pass
+def create_jwt(private_key, instance_id: str, client_id: str, jti: str, exp: int | None = None) -> str:
+    payload: dict = {"jti": jti, "client_id": client_id, "instance_id": instance_id, "scope": "task", "iat": int(time.time())}
+    if exp is not None:
+        payload["exp"] = exp
+    return jwt.encode(payload, private_key, algorithm="EdDSA")
 
 
-def create_task_manager_jwt(secret: str, client_id: str,
-                             instance_id: str, scope: str) -> str:
-    return pyjwt.encode({
-        "jti": str(uuid.uuid4()),
-        "client_id": client_id,
-        "instance_id": instance_id,
-        "scope": scope,
-        "iat": int(time.time()),
-    }, secret, algorithm="HS256")
+def verify_jwt(token: str, public_key) -> dict:
+    return jwt.decode(token, public_key, algorithms=["EdDSA"], options={"require": ["iat", "client_id", "instance_id", "scope"]})
 
 
-def create_evaluator_jwt(secret: str, instance_id: str, client_id: str,
-                          project_id: str, task_id: str,
-                          expiry_seconds: int = 86400) -> str:
-    return pyjwt.encode({
-        "jti": str(uuid.uuid4()),
-        "instance_id": instance_id,
-        "client_id": client_id,
-        "project_id": project_id,
-        "task_id": task_id,
-        "exp": int(time.time()) + expiry_seconds,
-    }, secret, algorithm="HS256")
-
-
-def verify_jwt(secret: str, token: str) -> dict:
-    try:
-        return pyjwt.decode(token, secret, algorithms=["HS256"])
-    except pyjwt.ExpiredSignatureError:
-        raise JWTError("expired")
-    except pyjwt.InvalidTokenError as e:
-        raise JWTError(str(e))
+def create_evaluator_jwt(private_key, instance_id: str, client_id: str, project_id: str, task_id: str, exp_seconds: int = 86400) -> str:
+    now = int(time.time())
+    payload = {"client_id": client_id, "instance_id": instance_id, "scope": "task", "project_id": project_id, "task_id": task_id, "iat": now, "exp": now + exp_seconds}
+    return jwt.encode(payload, private_key, algorithm="EdDSA")

@@ -1,47 +1,65 @@
-import os
+import sqlite3
 import pytest
-from fastapi.testclient import TestClient
-from agency.auth.jwt import create_task_manager_jwt
-
-SECRET = "a-test-secret-that-is-long-enough-for-hmac"
+from agency.auth.keypair import generate_keypair, load_private_key, load_public_key
+from agency.auth.jwt import create_jwt, create_evaluator_jwt
+from agency.utils.ids import generate_uuid_v7
 
 
 @pytest.fixture
-def client(tmp_path):
-    os.environ["AGENCY_STATE_DIR"] = str(tmp_path)
-    os.environ["AGENCY_JWT_SECRET"] = SECRET
-    from agency.api.app import create_app
-    app = create_app()
-    with TestClient(app) as c:
-        yield c
-    del os.environ["AGENCY_STATE_DIR"]
-    del os.environ["AGENCY_JWT_SECRET"]
+def keypair(tmp_path):
+    priv = str(tmp_path / "key.pem")
+    pub = str(tmp_path / "key.pub.pem")
+    generate_keypair(priv, pub)
+    return load_private_key(priv), load_public_key(pub)
 
 
-def test_health_unprotected(client):
-    resp = client.get("/health")
-    assert resp.status_code == 200
+@pytest.fixture
+def db_with_token(tmp_path):
+    from agency.db.migrations import run_migrations
+    conn = sqlite3.connect(str(tmp_path / "test.db"))
+    run_migrations(conn)
+    jti = generate_uuid_v7()
+    conn.execute(
+        "INSERT INTO issued_tokens (jti, client_id) VALUES (?, ?)",
+        (jti, "mcp"),
+    )
+    conn.commit()
+    return conn, jti
 
 
-def test_protected_route_without_token_returns_401(client):
-    resp = client.get("/tasks/some-id/agent")
-    assert resp.status_code == 401
+def test_valid_token_passes_middleware(keypair, db_with_token):
+    private_key, public_key = keypair
+    conn, jti = db_with_token
+    token = create_jwt(private_key, "inst-1", "mcp", jti)
+    from agency.api.middleware import check_token
+    result = check_token(token, public_key, conn)
+    assert result["client_id"] == "mcp"
 
 
-def test_protected_route_with_valid_token(client):
-    token = create_task_manager_jwt(SECRET, "client-1", "inst-1", scope="task")
-    resp = client.get("/tasks/some-id/agent",
-                      headers={"Authorization": f"Bearer {token}"})
-    # 404 is fine — route exists but task doesn't; proves middleware passed
-    assert resp.status_code in (200, 404)
+def test_revoked_token_rejected(keypair, db_with_token):
+    private_key, public_key = keypair
+    conn, jti = db_with_token
+    conn.execute("UPDATE issued_tokens SET revoked = 1 WHERE jti = ?", (jti,))
+    conn.commit()
+    token = create_jwt(private_key, "inst-1", "mcp", jti)
+    from agency.api.middleware import check_token, TokenRevoked
+    with pytest.raises(TokenRevoked):
+        check_token(token, public_key, conn)
 
 
-def test_expired_token_returns_401(client):
-    token = create_task_manager_jwt.__wrapped__ if hasattr(
-        create_task_manager_jwt, "__wrapped__") else None
-    from agency.auth.jwt import create_evaluator_jwt
-    token = create_evaluator_jwt(SECRET, "inst-1", "client-1", "proj-1",
-                                  "task-1", expiry_seconds=-1)
-    resp = client.get("/tasks/some-id/agent",
-                      headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 401
+def test_evaluator_jwt_no_jti_passes_revocation_check(keypair, db_with_token):
+    private_key, public_key = keypair
+    conn, _ = db_with_token
+    token = create_evaluator_jwt(private_key, "inst-1", "client-1", "proj-1", "task-1")
+    from agency.api.middleware import check_token
+    payload = check_token(token, public_key, conn)
+    assert payload["task_id"] == "task-1"
+    assert "jti" not in payload
+
+
+def test_missing_auth_header_raises(keypair, db_with_token):
+    _, public_key = keypair
+    conn, _ = db_with_token
+    from agency.api.middleware import check_token, MissingToken
+    with pytest.raises(MissingToken):
+        check_token(None, public_key, conn)
