@@ -6,15 +6,16 @@ from agency.utils.hashing import content_hash
 def enqueue_evaluation(
     conn: sqlite3.Connection,
     evaluator_data: str,
+    task_id: str,
     destination: str = "agency_instance",
 ) -> str:
     eid = new_uuid()
     hash_ = content_hash(evaluator_data)
     conn.execute(
         """INSERT INTO pending_evaluations
-           (id, evaluator_data, destination, content_hash)
-           VALUES (?, ?, ?, ?)""",
-        (eid, evaluator_data, destination, hash_),
+           (id, task_id, evaluator_data, destination, content_hash)
+           VALUES (?, ?, ?, ?, ?)""",
+        (eid, task_id, evaluator_data, destination, hash_),
     )
     conn.commit()
     return eid

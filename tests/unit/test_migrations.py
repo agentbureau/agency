@@ -67,3 +67,75 @@ def test_projects_table_has_admin_email_column(migrated_db):
 def test_tasks_table_has_agent_composition_id_column(migrated_db):
     cols = [r[1] for r in migrated_db.execute("PRAGMA table_info(tasks)").fetchall()]
     assert "agent_composition_id" in cols
+
+
+def test_issued_tokens_table_exists(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='issued_tokens'")
+    assert cursor.fetchone() is not None
+
+
+def test_pending_evaluations_table_exists(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_evaluations'")
+    assert cursor.fetchone() is not None
+
+
+def test_primitive_mutations_table_exists(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='primitive_mutations'")
+    assert cursor.fetchone() is not None
+
+
+def test_primitives_view_exists(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='primitives'")
+    assert cursor.fetchone() is not None
+
+
+def test_role_components_has_quality_and_permission_block(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("PRAGMA table_info(role_components)")
+    cols = {row[1] for row in cursor.fetchall()}
+    assert "quality" in cols
+    assert "permission_block" in cols
+    assert "override_capability" in cols
+    assert "name" in cols
+    assert "domain_specificity" in cols
+    assert "domain" in cols
+    assert "origin_instance_id" in cols
+    assert "parent_content_hash" in cols
+
+
+def test_desired_outcomes_has_quality_no_override_capability(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("PRAGMA table_info(desired_outcomes)")
+    cols = {row[1] for row in cursor.fetchall()}
+    assert "quality" in cols
+    assert "permission_block" in cols
+    assert "override_capability" not in cols
+
+
+def test_agents_has_permission_block(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("PRAGMA table_info(agents)")
+    cols = {row[1] for row in cursor.fetchall()}
+    assert "permission_block" in cols
+
+
+def test_projects_has_all_new_columns(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("PRAGMA table_info(projects)")
+    cols = {row[1] for row in cursor.fetchall()}
+    expected = {"name", "contact_email", "oversight_preference", "error_notification_timeout",
+                "llm_provider", "llm_model", "llm_api_key", "homepool_retry_max_interval",
+                "permission_block", "attribution"}
+    assert expected.issubset(cols)

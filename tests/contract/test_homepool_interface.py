@@ -4,15 +4,26 @@ These verify that Agency's outputs conform to the v2 spec
 before the home pool server exists.
 Run against a local mock HTTPX server.
 """
+import pytest
+from agency.auth.keypair import generate_keypair, load_private_key, load_public_key
 from agency.auth.jwt import create_evaluator_jwt, verify_jwt
 
 
-def test_evaluator_jwt_contains_required_attribution_fields():
+@pytest.fixture
+def keypair(tmp_path):
+    priv = str(tmp_path / "key.pem")
+    pub = str(tmp_path / "key.pub.pem")
+    generate_keypair(priv, pub)
+    return load_private_key(priv), load_public_key(pub)
+
+
+def test_evaluator_jwt_contains_required_attribution_fields(keypair):
+    private_key, public_key = keypair
     token = create_evaluator_jwt(
-        secret="s" * 32, instance_id="i", client_id="c",
-        project_id="p", task_id="t", expiry_seconds=3600
+        private_key, instance_id="i", client_id="c",
+        project_id="p", task_id="t",
     )
-    payload = verify_jwt("s" * 32, token)
+    payload = verify_jwt(token, public_key)
     for field in ["instance_id", "client_id", "project_id", "task_id"]:
         assert field in payload, f"JWT missing home pool attribution field: {field}"
 
@@ -44,16 +55,15 @@ def test_evaluation_report_score_is_numeric():
     assert isinstance(report.score, float)
 
 
-def test_jwt_expiry_is_enforced():
+def test_jwt_expiry_is_enforced(keypair):
     """Expired JWTs must be rejected — home pool will verify on receipt."""
-    from agency.auth.jwt import JWTError
-    import pytest
+    import time
+    private_key, public_key = keypair
+    now = int(time.time())
     token = create_evaluator_jwt(
-        secret="s" * 32, instance_id="i", client_id="c",
-        project_id="p", task_id="t", expiry_seconds=-1
+        private_key, instance_id="i", client_id="c",
+        project_id="p", task_id="t", exp_seconds=-1
     )
-    try:
-        verify_jwt("s" * 32, token)
-        assert False, "Should have raised JWTError"
-    except JWTError as e:
-        assert "expired" in str(e)
+    import jwt as pyjwt
+    with pytest.raises(pyjwt.exceptions.ExpiredSignatureError):
+        verify_jwt(token, public_key)

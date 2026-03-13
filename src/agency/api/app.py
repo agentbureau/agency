@@ -16,11 +16,6 @@ def _state_dir() -> Path:
     return Path(os.environ.get("AGENCY_STATE_DIR", Path.home() / ".agency"))
 
 
-def _resolve_jwt_secret(cfg: dict) -> str:
-    """Env var overrides toml. Returns empty string if absent from both."""
-    return os.environ.get("AGENCY_JWT_SECRET") or cfg.get("auth", {}).get("jwt_secret", "")
-
-
 def get_db(state_dir: Path) -> sqlite3.Connection:
     db_path = state_dir / "agency.db"
     return sqlite3.connect(db_path, check_same_thread=False)
@@ -28,9 +23,13 @@ def get_db(state_dir: Path) -> sqlite3.Connection:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger = logging.getLogger(__name__)
+
+    # Step 1: Resolve AGENCY_STATE_DIR, confirm agency.toml exists
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
 
+    # Step 2: Load and parse agency.toml
     cfg = {}
     cfg_path = state_dir / "agency.toml"
     if cfg_path.exists():
@@ -39,14 +38,36 @@ async def lifespan(app: FastAPI):
         except ConfigError:
             pass
 
-    secret = _resolve_jwt_secret(cfg)
+    # Step 3: Load Ed25519 public key — REQUIRED; abort with clear error if missing
+    pub_key_path = state_dir / "keys" / "agency.ed25519.pub.pem"
+    priv_key_path = state_dir / "keys" / "agency.ed25519.pem"
+    if not pub_key_path.exists():
+        raise RuntimeError(
+            f"Ed25519 public key not found at {pub_key_path}. "
+            "Run 'agency init' to generate keypair."
+        )
+    from agency.auth.keypair import load_public_key, load_private_key
+    public_key = load_public_key(str(pub_key_path))
+    private_key = None
+    if priv_key_path.exists():
+        private_key = load_private_key(str(priv_key_path))
 
+    # Step 4: Open SQLite; create if absent
     conn = get_db(state_dir)
+
+    # Step 5: Enable WAL mode — log warning on failure, do NOT abort
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except Exception as e:
+        logger.warning("WAL mode could not be enabled: %s", e)
+
+    # Step 6: Run migrations
     run_migrations(conn)
 
     app.state.db = conn
     app.state.state_dir = state_dir
-    app.state.jwt_secret = secret
+    app.state.public_key = public_key
+    app.state.private_key = private_key
     app.state.config = cfg
 
     status_url = cfg.get("status", {}).get("url")
@@ -61,32 +82,37 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agency", version="1.1.0", lifespan=lifespan)
+    app = FastAPI(title="Agency", version="1.2.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def jwt_middleware(request, call_next):
-        from agency.api.middleware import UNPROTECTED
-        from agency.auth.jwt import verify_jwt, JWTError
+        from agency.api.middleware import UNPROTECTED, check_token, MissingToken, TokenRevoked
         if request.url.path in UNPROTECTED:
             return await call_next(request)
-        secret = request.app.state.jwt_secret
-        if not secret:
-            return await call_next(request)
+
+        public_key = getattr(request.app.state, "public_key", None)
+
+        conn = request.app.state.db
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return JSONResponse({"detail": "Missing or invalid Authorization header"},
-                                status_code=401)
-        token = auth.removeprefix("Bearer ")
+        token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else None
+
         try:
-            payload = verify_jwt(secret, token)
-        except JWTError as e:
-            return JSONResponse({"detail": str(e)}, status_code=401)
+            payload = check_token(token, public_key, conn)
+        except MissingToken:
+            return JSONResponse(
+                {"detail": "Missing or invalid Authorization header"}, status_code=401
+            )
+        except TokenRevoked:
+            return JSONResponse({"detail": "Token has been revoked"}, status_code=401)
+        except Exception as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=401)
+
         request.state.jwt_payload = payload
         return await call_next(request)
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "version": "1.1.0"}
+        return {"status": "ok", "version": "1.2.0"}
 
     from agency.api.routes import tasks, projects, primitives, evolution
     app.include_router(tasks.router)
@@ -95,6 +121,3 @@ def create_app() -> FastAPI:
     app.include_router(evolution.router)
 
     return app
-
-
-app = create_app()
