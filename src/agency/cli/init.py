@@ -585,19 +585,19 @@ def _step_download_embedding_model():
 
 
 def _step_install_primitives(db_path: str, instance_id: str):
-    from agency.cli.primitives import STARTER_PRIMITIVES, EXTENDED_PRIMITIVES
-    from agency.db.primitives import insert_primitive
+    from agency.cli.primitives import STARTER_CSV_URL, _fetch_csv, install_from_csv
+
+    click.echo("Fetching starter primitives from GitHub...")
+    try:
+        rows = _fetch_csv(STARTER_CSV_URL)
+    except Exception as e:
+        click.echo(f"Error: Could not reach GitHub: {e}")
+        click.echo("Install later: agency primitives update")
+        return
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    inserted = 0
-    for table, descs in {**STARTER_PRIMITIVES, **EXTENDED_PRIMITIVES}.items():
-        for desc in descs:
-            try:
-                insert_primitive(conn, table, desc, instance_id=instance_id)
-                inserted += 1
-            except Exception:
-                pass
+    inserted, skipped = install_from_csv(rows, conn, instance_id)
     conn.close()
     click.echo(f"{inserted} primitives installed.                                       Done")
 
