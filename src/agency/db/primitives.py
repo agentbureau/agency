@@ -8,6 +8,15 @@ from agency.engine.permissions import DEFAULT_PERMISSION
 PRIMITIVE_TABLES = ("role_components", "desired_outcomes", "trade_off_configs")
 
 
+AGENTBUREAU_INSTANCE_ID = "00000000-0000-7000-8000-000000000001"
+
+TYPE_TO_TABLE = {
+    "role_component": "role_components",
+    "desired_outcome": "desired_outcomes",
+    "trade_off_config": "trade_off_configs",
+}
+
+
 def insert_primitive(
     conn: sqlite3.Connection,
     table: str,
@@ -16,6 +25,11 @@ def insert_primitive(
     name: str = "",
     client_id: str | None = None,
     project_id: str | None = None,
+    quality: int = 100,
+    domain_specificity: int = 0,
+    domain: str = "[]",
+    origin_instance_id: str = AGENTBUREAU_INSTANCE_ID,
+    parent_content_hash: str | None = None,
 ) -> str:
     assert table in PRIMITIVE_TABLES
     pid = new_uuid()
@@ -25,9 +39,13 @@ def insert_primitive(
         name = description[:80]
     conn.execute(
         f"""INSERT INTO {table}
-            (id, name, description, content_hash, instance_id, client_id, project_id, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (pid, name, description, hash_, instance_id, client_id, project_id, json.dumps(vec)),
+            (id, name, description, content_hash, quality, domain_specificity, domain,
+             origin_instance_id, parent_content_hash,
+             instance_id, client_id, project_id, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (pid, name, description, hash_, quality, domain_specificity, domain,
+         origin_instance_id, parent_content_hash,
+         instance_id, client_id, project_id, json.dumps(vec)),
     )
     conn.commit()
     return pid

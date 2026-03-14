@@ -16,21 +16,13 @@ def test_install_starter_primitives(runner_env):
     runner = CliRunner()
     result = runner.invoke(primitives_command, ["install"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert "Installed" in result.output
+    assert "installed" in result.output
 
     db = sqlite3.connect(runner_env / "agency.db")
-    count = db.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
-    assert count >= 8  # starter set has 8 role components
-
-
-def test_install_extended_primitives(runner_env):
-    runner = CliRunner()
-    result = runner.invoke(primitives_command, ["install", "--extended"],
-                           catch_exceptions=False)
-    assert result.exit_code == 0
-    db = sqlite3.connect(runner_env / "agency.db")
-    count = db.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
-    assert count >= 12  # starter (8) + extended (4)
+    count = db.execute(
+        "SELECT COUNT(*) FROM primitives"
+    ).fetchone()[0]
+    assert count >= 50  # starter CSV has 113 primitives
 
 
 def test_install_idempotent(runner_env):
@@ -38,12 +30,20 @@ def test_install_idempotent(runner_env):
     runner.invoke(primitives_command, ["install"], catch_exceptions=False)
     result = runner.invoke(primitives_command, ["install"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert "already present" in result.output
+    assert "0 primitives installed" in result.output
 
 
-def test_update_adds_only_new(runner_env):
+def test_update_after_install(runner_env):
     runner = CliRunner()
     runner.invoke(primitives_command, ["install"], catch_exceptions=False)
     result = runner.invoke(primitives_command, ["update"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert "already present" in result.output
+    assert "Unchanged:" in result.output
+
+
+def test_list_primitives(runner_env):
+    runner = CliRunner()
+    runner.invoke(primitives_command, ["install"], catch_exceptions=False)
+    result = runner.invoke(primitives_command, ["list"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "[q=" in result.output
