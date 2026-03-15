@@ -56,12 +56,16 @@ def get_task_evaluator(task_id: str, request: Request):
     return build_evaluator(request.app.state.db, task_id, task_for_assigner, private_key, instance_id)
 
 
-@router.post("/{task_id}/evaluation", status_code=202)
+@router.post("/{task_id}/evaluation", status_code=200)
 def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
     from agency.db.evaluations import enqueue_evaluation
+    from agency.utils.hashing import content_hash
     import json
-    enqueue_evaluation(request.app.state.db, json.dumps(report.model_dump()), task_id=task_id)
-    return {"status": "accepted", "task_id": task_id}
+    report.task_id = task_id
+    data = json.dumps(report.model_dump(), ensure_ascii=False, separators=(",", ":"))
+    hash_ = content_hash(data)
+    enqueue_evaluation(request.app.state.db, data, task_id=task_id)
+    return {"status": "accepted", "task_id": task_id, "content_hash": hash_}
 
 
 def _notify_empty_primitives(request: Request, project_id: str | None) -> None:

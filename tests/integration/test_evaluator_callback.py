@@ -79,6 +79,7 @@ def test_evaluation_callback_accepted(client):
     task_id = resp.json()["task_id"]
 
     report = {
+        "output": "The agent completed the task well.",
         "task_id": task_id,
         "evaluator_agent_id": "evt-abc",
         "evaluator_agent_content_hash": "hash123",
@@ -91,4 +92,4 @@ def test_evaluation_callback_accepted(client):
         "evaluator_agent": {"model_provider": "anthropic", "model_name": "claude-sonnet-4-6"},
     }
     resp = client.post(f"/tasks/{task_id}/evaluation", json=report)
-    assert resp.status_code == 202
+    assert resp.status_code == 200

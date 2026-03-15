@@ -94,6 +94,7 @@ def test_full_roundtrip(client, tmp_path):
 
     # 5. Submit evaluation callback (callback JWT has no jti, so no revocation check)
     report = {
+        "output": "The agent completed the task effectively with good quality.",
         "task_id": task_id,
         "evaluator_agent_id": eval_data["evaluator_agent_id"],
         "evaluator_agent_content_hash": eval_data["content_hash"],
@@ -107,7 +108,7 @@ def test_full_roundtrip(client, tmp_path):
     }
     resp = client.post(f"/tasks/{task_id}/evaluation",
                        json=report, headers={"Authorization": f"Bearer {callback_jwt}"})
-    assert resp.status_code == 202
+    assert resp.status_code == 200
 
 
 def test_idempotency_duplicate_jwt_rejected(tmp_path):

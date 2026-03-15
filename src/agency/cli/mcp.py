@@ -138,7 +138,7 @@ def _tool_agency_evaluator(
             data = resp.json()
             return json.dumps(
                 _make_success(
-                    evaluator_prompt=data["evaluator_prompt"],
+                    evaluator_prompt=data["rendered_prompt"],
                     callback_jwt=data["callback_jwt"],
                 )
             )

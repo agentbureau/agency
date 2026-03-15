@@ -32,6 +32,7 @@ def test_evaluation_report_has_required_home_pool_fields():
     """Evaluation report must carry fields the home pool needs for attribution."""
     from agency.models.evaluations import EvaluationReport
     report = EvaluationReport(
+        output="The task was completed successfully.",
         task_id="t", evaluator_agent_id="e", evaluator_agent_content_hash="h",
         task_completed=True, score_type="percentage", score=85,
         time_taken_seconds=30, estimated_tokens=500,
@@ -43,9 +44,19 @@ def test_evaluation_report_has_required_home_pool_fields():
         assert field in d
 
 
+def test_evaluation_report_accepts_minimal_body():
+    """MCP tool sends only output — all other fields are optional."""
+    from agency.models.evaluations import EvaluationReport
+    report = EvaluationReport(output="Task evaluation text.")
+    d = report.model_dump()
+    assert d["output"] == "Task evaluation text."
+    assert d["task_id"] is None
+
+
 def test_evaluation_report_score_is_numeric():
     from agency.models.evaluations import EvaluationReport
     report = EvaluationReport(
+        output="Evaluation output.",
         task_id="t", evaluator_agent_id="e", evaluator_agent_content_hash="h",
         task_completed=True, score_type="percentage", score=72.5,
         time_taken_seconds=45, estimated_tokens=800,
