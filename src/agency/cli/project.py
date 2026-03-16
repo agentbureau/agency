@@ -1,9 +1,12 @@
-"""CLI wizard for `agency project create`."""
+"""CLI commands for `agency project` subgroup."""
 
+import json as _json
 import os
 import sqlite3
+import sys
 
 import click
+import httpx
 import tomllib
 import tomli_w
 from pathlib import Path
@@ -166,9 +169,118 @@ def _set_default_project_in_toml(toml_path: str, project_id: str) -> None:
         tomli_w.dump(cfg, f)
 
 
+def _get_server_url() -> str:
+    """Derive Agency server URL from agency.toml [server] host/port."""
+    state_dir = os.environ.get("AGENCY_STATE_DIR", os.path.expanduser("~/.agency"))
+    path = os.path.join(state_dir, "agency.toml")
+    try:
+        with open(path, "rb") as f:
+            cfg = tomllib.load(f)
+    except Exception:
+        cfg = {}
+    host = cfg.get("server", {}).get("host", "127.0.0.1")
+    port = cfg.get("server", {}).get("port", 8000)
+    return f"http://{host}:{port}"
+
+
+def _get_token() -> str:
+    """Read bearer token from AGENCY_TOKEN_FILE (default: ~/.agency-mcp-token)."""
+    token_file = os.environ.get(
+        "AGENCY_TOKEN_FILE", os.path.expanduser("~/.agency-mcp-token")
+    )
+    try:
+        with open(token_file) as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        token = ""
+    if not token:
+        click.echo(
+            f"Error: token file not found at {token_file}. "
+            f"Run 'agency token create --client-id mcp > {token_file}' first.",
+            err=True,
+        )
+        raise SystemExit(1)
+    return token
+
+
 @click.command("create")
-def project_create_command():
-    """Create a new Agency project via interactive wizard."""
+@click.option("--name", default=None, help="Project name (non-interactive mode).")
+@click.option("--description", default=None, help="Project description.")
+@click.option("--contact-email", default=None, help="Contact email.")
+@click.option("--oversight", default=None, help="Oversight preference (discretion/review).")
+@click.option("--error-timeout", default=None, type=int, help="Error notification timeout in seconds.")
+@click.option("--attribution", default=None, type=bool, help="Enable attribution.")
+@click.option("--set-default", is_flag=True, default=False, help="Set as default project.")
+@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table", help="Output format.")
+def project_create_command(name, description, contact_email, oversight, error_timeout, attribution, set_default, fmt):
+    """Create a new Agency project.
+
+    When --name is provided, runs non-interactively via the API server.
+    When --name is omitted, runs the interactive wizard.
+    """
+    if name is not None:
+        # Non-interactive mode: call API
+        _project_create_api(name, description, contact_email, oversight, error_timeout, attribution, set_default, fmt)
+    else:
+        # Interactive wizard (original behaviour)
+        _project_create_interactive()
+
+
+def _project_create_api(name, description, contact_email, oversight, error_timeout, attribution, set_default, fmt):
+    """Non-interactive project creation via POST /projects."""
+    base_url = _get_server_url()
+    token = _get_token()
+
+    payload = {"name": name}
+    if description is not None:
+        payload["description"] = description
+    if contact_email is not None:
+        payload["contact_email"] = contact_email
+    if oversight is not None:
+        payload["oversight_preference"] = oversight
+    if error_timeout is not None:
+        payload["error_notification_timeout"] = error_timeout
+    if attribution is not None:
+        payload["attribution"] = attribution
+
+    try:
+        resp = httpx.post(
+            f"{base_url}/projects",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except httpx.ConnectError:
+        click.echo(
+            f"Cannot reach Agency server at {base_url}. Start it with: agency serve",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if resp.status_code not in (200, 201):
+        click.echo(f"Error: {resp.text}", err=True)
+        raise SystemExit(1)
+
+    project = resp.json()
+
+    if set_default:
+        toml_path = os.path.join(
+            os.environ.get("AGENCY_STATE_DIR", os.path.expanduser("~/.agency")),
+            "agency.toml",
+        )
+        _set_default_project_in_toml(toml_path, project["id"])
+
+    if fmt == "json":
+        click.echo(_json.dumps(project, indent=2))
+    else:
+        click.echo(f"Project created: {project.get('name', name)}")
+        click.echo(f"  ID: {project['id']}")
+        if set_default:
+            click.echo(f"  Set as default project in agency.toml")
+
+
+def _project_create_interactive():
+    """Original interactive wizard path."""
     state_dir = _state_dir()
     db_path = str(state_dir / "agency.db")
     toml_path = str(state_dir / "agency.toml")
@@ -187,3 +299,99 @@ def project_create_command():
         run_project_create_wizard(str(state_dir), conn, toml_path)
     finally:
         conn.close()
+
+
+@click.command("list")
+@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table", help="Output format.")
+def project_list_command(fmt):
+    """List all Agency projects."""
+    base_url = _get_server_url()
+    token = _get_token()
+
+    try:
+        resp = httpx.get(
+            f"{base_url}/projects",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except httpx.ConnectError:
+        click.echo(
+            f"Cannot reach Agency server at {base_url}. Start it with: agency serve",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if resp.status_code != 200:
+        click.echo(f"Error: {resp.text}", err=True)
+        raise SystemExit(1)
+
+    data = resp.json()
+    projects = data.get("projects", [])
+    default_id = data.get("default_project_id")
+
+    if not projects:
+        click.echo("No projects found.")
+        return
+
+    if fmt == "json":
+        out = {
+            "projects": [
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "is_default": p["id"] == default_id,
+                    "created_at": p.get("created_at", ""),
+                }
+                for p in projects
+            ],
+            "default_project_id": default_id,
+        }
+        click.echo(_json.dumps(out, indent=2))
+    else:
+        click.echo(f"{'ID':<38} {'NAME':<20} {'DEFAULT':<10} {'CREATED'}")
+        for p in projects:
+            marker = "*" if p["id"] == default_id else ""
+            click.echo(
+                f"{p['id']:<38} {p['name']:<20} {marker:<10} {p.get('created_at', '')}"
+            )
+
+
+@click.command("pin")
+@click.option("--project-id", default=None, help="Project UUID to pin.")
+def project_pin_command(project_id):
+    """Pin a project to .agency-project in the current directory."""
+    if not project_id:
+        click.echo("Error: --project-id is required.", err=True)
+        raise SystemExit(1)
+
+    base_url = _get_server_url()
+    token = _get_token()
+
+    # Validate project exists via API
+    try:
+        resp = httpx.get(
+            f"{base_url}/projects/{project_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except httpx.ConnectError:
+        click.echo(
+            f"Cannot reach Agency server at {base_url}. Start it with: agency serve",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if resp.status_code != 200:
+        click.echo(
+            f"Error: project {project_id} not found on server.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    project = resp.json()
+    pin_path = os.path.join(os.getcwd(), ".agency-project")
+    with open(pin_path, "w") as f:
+        f.write(project_id + "\n")
+
+    project_name = project.get("name", project_id)
+    click.echo(f"Pinned project \"{project_name}\" ({project_id}) to {pin_path}")

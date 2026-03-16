@@ -6,7 +6,7 @@ from agency.cli.primitives import primitives_command
 from agency.cli.upgrade import upgrade_command
 from agency.cli.token import token_group
 from agency.cli.mcp import mcp_command
-from agency.cli.project import project_create_command
+from agency.cli.project import project_create_command, project_list_command, project_pin_command
 from agency.cli.setup import client_setup_command
 from agency.cli.skills import skills_install_command
 
@@ -25,9 +25,11 @@ main.add_command(upgrade_command)
 main.add_command(token_group)
 main.add_command(mcp_command)
 
-# agency project create
+# agency project {create,list,pin}
 project_group = click.Group("project")
 project_group.add_command(project_create_command, name="create")
+project_group.add_command(project_list_command, name="list")
+project_group.add_command(project_pin_command, name="pin")
 main.add_command(project_group)
 
 # agency client setup

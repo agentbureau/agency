@@ -1,11 +1,18 @@
+import json
 import sqlite3
 import os
 import re
 import tomllib
+from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 from agency.db.migrations import run_migrations
-from agency.cli.project import project_create_command, run_project_create_wizard
+from agency.cli.project import (
+    project_create_command,
+    project_list_command,
+    project_pin_command,
+    run_project_create_wizard,
+)
 
 
 def _setup_db_and_toml(tmp_path, toml_overrides=None):
@@ -153,3 +160,248 @@ def test_run_project_create_wizard_reusable(tmp_path):
     row = conn.execute("SELECT name FROM projects WHERE name = 'Wizard Project'").fetchone()
     conn.close()
     assert row is not None
+
+
+# ---------------------------------------------------------------------------
+# project list
+# ---------------------------------------------------------------------------
+
+
+def _mock_httpx_get(url, **kwargs):
+    """Return a mock response for GET /projects."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "projects": [
+            {"id": "aaa-bbb", "name": "Alpha", "created_at": "2026-01-01T00:00:00"},
+            {"id": "ccc-ddd", "name": "Beta", "created_at": "2026-01-02T00:00:00"},
+        ],
+        "default_project_id": "aaa-bbb",
+    }
+    return resp
+
+
+def test_project_list_table_output(tmp_path, monkeypatch):
+    """agency project list prints table format with * marker for default."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    # Write a token file
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.get", side_effect=_mock_httpx_get):
+        result = runner.invoke(project_list_command, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Alpha" in result.output
+    assert "Beta" in result.output
+    assert "*" in result.output  # default marker
+
+
+def test_project_list_json_output(tmp_path, monkeypatch):
+    """agency project list --format json returns valid JSON."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.get", side_effect=_mock_httpx_get):
+        result = runner.invoke(project_list_command, ["--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert "projects" in data
+    assert len(data["projects"]) == 2
+    assert data["projects"][0]["is_default"] is True
+
+
+def test_project_list_empty(tmp_path, monkeypatch):
+    """agency project list with no projects prints message."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    def _empty_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"projects": [], "default_project_id": None}
+        return resp
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.get", side_effect=_empty_get):
+        result = runner.invoke(project_list_command, [])
+
+    assert result.exit_code == 0, result.output
+    assert "No projects found." in result.output
+
+
+def test_project_list_server_unreachable(tmp_path, monkeypatch):
+    """agency project list prints error when server is down."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    import httpx as _httpx
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.get", side_effect=_httpx.ConnectError("refused")):
+        result = runner.invoke(project_list_command, [])
+
+    assert result.exit_code == 1
+    assert "Cannot reach Agency server" in result.output
+
+
+# ---------------------------------------------------------------------------
+# project create (non-interactive via --name)
+# ---------------------------------------------------------------------------
+
+
+def test_project_create_noninteractive(tmp_path, monkeypatch):
+    """agency project create --name calls POST /projects API."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    def _mock_post(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {
+            "id": "new-uuid-123",
+            "name": "CLI Test Project",
+            "created_at": "2026-01-01T00:00:00",
+        }
+        return resp
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.post", side_effect=_mock_post):
+        result = runner.invoke(project_create_command, ["--name", "CLI Test Project"])
+
+    assert result.exit_code == 0, result.output
+    assert "CLI Test Project" in result.output
+    assert "new-uuid-123" in result.output
+
+
+def test_project_create_noninteractive_json(tmp_path, monkeypatch):
+    """agency project create --name --format json returns JSON."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    def _mock_post(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {
+            "id": "new-uuid-456",
+            "name": "JSON Project",
+            "created_at": "2026-01-01T00:00:00",
+        }
+        return resp
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.post", side_effect=_mock_post):
+        result = runner.invoke(project_create_command, [
+            "--name", "JSON Project", "--format", "json",
+        ])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["id"] == "new-uuid-456"
+
+
+def test_project_create_noninteractive_duplicate(tmp_path, monkeypatch):
+    """Non-interactive create shows error on duplicate name."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    def _mock_post(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 409
+        resp.text = '{"error": "duplicate_name", "message": "A project named \\"Dup\\" already exists."}'
+        return resp
+
+    runner = CliRunner()
+    with patch("agency.cli.project.httpx.post", side_effect=_mock_post):
+        result = runner.invoke(project_create_command, ["--name", "Dup"])
+
+    assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# project pin
+# ---------------------------------------------------------------------------
+
+
+def test_project_pin_writes_file(tmp_path, monkeypatch):
+    """agency project pin --project-id writes .agency-project file."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    # Mock the API call that validates the project exists
+    def _mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "id": "pin-uuid-789",
+            "name": "Pinned Project",
+        }
+        return resp
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        with patch("agency.cli.project.httpx.get", side_effect=_mock_get):
+            result = runner.invoke(project_pin_command, ["--project-id", "pin-uuid-789"])
+
+        assert result.exit_code == 0, result.output
+        pin_file = os.path.join(td, ".agency-project")
+        assert os.path.exists(pin_file)
+        with open(pin_file) as f:
+            assert f.read().strip() == "pin-uuid-789"
+
+
+def test_project_pin_invalid_project(tmp_path, monkeypatch):
+    """agency project pin with non-existent project shows error."""
+    _setup_db_and_toml(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    token_path = str(tmp_path / "token")
+    with open(token_path, "w") as f:
+        f.write("test-token")
+    monkeypatch.setenv("AGENCY_TOKEN_FILE", token_path)
+
+    def _mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 404
+        resp.text = "Not found"
+        return resp
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        with patch("agency.cli.project.httpx.get", side_effect=_mock_get):
+            result = runner.invoke(project_pin_command, ["--project-id", "nonexistent"])
+
+    assert result.exit_code == 1

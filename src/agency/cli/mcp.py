@@ -4,6 +4,11 @@ Exposes tools for the assign → execute → evaluate loop:
   - agency_assign: compose agents for tasks, return prompts
   - agency_evaluator: get evaluator prompt + callback JWT
   - agency_submit_evaluation: submit evaluation with structured metadata
+
+Discovery and status tools:
+  - agency_list_projects: list all projects with default identification
+  - agency_create_project: create a new project
+  - agency_status: instance status, task progress, primitive health
 """
 import asyncio
 import hashlib
@@ -45,6 +50,24 @@ NEXT_STEP_EVALUATOR = (
 NEXT_STEP_SUBMIT = (
     "Evaluation recorded. The content_hash confirms what Agency received. "
     "The assign-execute-evaluate loop for this task is complete."
+)
+NEXT_STEP_LIST_PROJECTS = (
+    "Pass a project_id to agency_assign, or omit it to use the default project."
+)
+NEXT_STEP_LIST_PROJECTS_EMPTY = (
+    "Create a project first with agency_create_project or: agency project create"
+)
+NEXT_STEP_CREATE_PROJECT = (
+    "This project is now available for task assignment. Pass project_id to "
+    "agency_assign, or use it as the default by including set_as_default: true."
+)
+NEXT_STEP_STATUS_ASSIGNED = (
+    "{n} tasks are assigned but not yet evaluated. Execute them using the "
+    "rendered_prompt from agency_assign, then call agency_evaluator for each."
+)
+NEXT_STEP_STATUS_DEFAULT = (
+    "To assign tasks, call agency_assign. To check on a specific task's "
+    "evaluation, call agency_evaluator with the agency_task_id."
 )
 
 
@@ -354,6 +377,226 @@ def _tool_agency_submit_evaluation(
         return json.dumps(_make_error(None, str(e)))
 
 
+def _detect_default_source() -> str:
+    """Determine how the default project ID is currently resolved."""
+    repo_config = _find_repo_config()
+    if repo_config:
+        try:
+            with open(repo_config) as f:
+                val = f.read().strip()
+            if val:
+                return "repo_config"
+        except Exception:
+            pass
+    if os.environ.get("AGENCY_PROJECT_ID"):
+        return "env_var"
+    cfg = _read_toml_config()
+    if cfg.get("project", {}).get("default_id"):
+        return "toml_config"
+    return "none"
+
+
+def _tool_agency_list_projects(base_url: str, token: str) -> str:
+    """GET /projects — list all projects with default identification."""
+    try:
+        resp = _call_with_retry(
+            httpx.get,
+            f"{base_url}/projects",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            projects = data.get("projects", [])
+            default_id = data.get("default_project_id")
+            default_source = _detect_default_source()
+
+            enriched = []
+            for p in projects:
+                enriched.append({
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "description": p.get("description"),
+                    "is_default": p.get("id") == default_id,
+                    "created_at": p.get("created_at", ""),
+                })
+
+            if not projects:
+                next_step = NEXT_STEP_LIST_PROJECTS_EMPTY
+            else:
+                next_step = NEXT_STEP_LIST_PROJECTS
+
+            return json.dumps({
+                "projects": enriched,
+                "default_project_id": default_id,
+                "default_source": default_source,
+                "next_step": next_step,
+            })
+        if resp.status_code == 401:
+            return json.dumps(_make_error(
+                401,
+                "Authentication failed.",
+                cause="Invalid or revoked token.",
+                fix=f"Regenerate: agency token create --client-id mcp > {os.path.expanduser('~/.agency-mcp-token')}",
+            ))
+        return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
+    except httpx.HTTPError as e:
+        return json.dumps(_make_error(None, str(e)))
+
+
+def _write_toml_default_id(project_id: str) -> None:
+    """Update agency.toml [project] default_id."""
+    import tomllib
+    import tomli_w
+
+    config_path = _get_config_file_path()
+    try:
+        with open(config_path, "rb") as f:
+            cfg = tomllib.load(f)
+    except Exception:
+        cfg = {}
+
+    if "project" not in cfg:
+        cfg["project"] = {}
+    cfg["project"]["default_id"] = project_id
+
+    with open(config_path, "wb") as f:
+        tomli_w.dump(cfg, f)
+
+
+def _tool_agency_create_project(
+    base_url: str,
+    token: str,
+    name: str,
+    description: Optional[str] = None,
+    contact_email: Optional[str] = None,
+    oversight_preference: Optional[str] = None,
+    error_notification_timeout: Optional[int] = None,
+    attribution: Optional[bool] = None,
+    set_as_default: bool = False,
+) -> str:
+    """POST /projects — create a new project."""
+    if not name or not name.strip():
+        return json.dumps(_make_error(
+            400,
+            "Project name is required.",
+            cause="The name parameter is missing or empty.",
+            fix="Pass a non-empty name string to agency_create_project.",
+        ))
+
+    body: dict = {"name": name.strip()}
+    if description is not None:
+        body["description"] = description
+    if contact_email is not None:
+        body["contact_email"] = contact_email
+    if oversight_preference is not None:
+        body["oversight_preference"] = oversight_preference
+    if error_notification_timeout is not None:
+        body["error_notification_timeout"] = error_notification_timeout
+    if attribution is not None:
+        body["attribution"] = attribution
+
+    try:
+        resp = _call_with_retry(
+            httpx.post,
+            f"{base_url}/projects",
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            project_id = data.get("id")
+
+            if set_as_default and project_id:
+                try:
+                    _write_toml_default_id(project_id)
+                except Exception:
+                    pass  # Non-fatal; project was still created
+
+            # Build settings_applied from response data
+            settings_applied = {}
+            for field in ("contact_email", "oversight_preference",
+                          "error_notification_timeout", "attribution"):
+                val = data.get(field)
+                if val is not None:
+                    source = "explicit" if field in body else "inherited"
+                    settings_applied[field] = {"value": val, "source": source}
+
+            return json.dumps({
+                "project_id": project_id,
+                "name": data.get("name"),
+                "is_default": set_as_default,
+                "settings_applied": settings_applied,
+                "next_step": NEXT_STEP_CREATE_PROJECT,
+            })
+        if resp.status_code == 409:
+            try:
+                detail = resp.json().get("detail", {})
+                existing_id = detail.get("existing_project_id", "") if isinstance(detail, dict) else ""
+                proj_name = name.strip()
+            except Exception:
+                existing_id = ""
+                proj_name = name.strip()
+            return json.dumps(_make_error(
+                409,
+                f'A project named "{proj_name}" already exists (id: {existing_id}).',
+                cause="Project names must be unique (case-insensitive).",
+                fix="Use a different name, or pass the existing project's id to agency_assign.",
+            ))
+        if resp.status_code == 400:
+            try:
+                detail = resp.json().get("detail", {})
+                msg = detail.get("message", resp.text) if isinstance(detail, dict) else resp.text
+            except Exception:
+                msg = resp.text
+            return json.dumps(_make_error(400, msg))
+        return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
+    except httpx.HTTPError as e:
+        return json.dumps(_make_error(None, str(e)))
+
+
+def _tool_agency_status(
+    base_url: str, token: str, project_id: Optional[str] = None
+) -> str:
+    """GET /status — instance status with task progress and primitive health."""
+    url = f"{base_url}/status"
+    if project_id:
+        url = f"{url}?project_id={project_id}"
+    try:
+        resp = _call_with_retry(
+            httpx.get,
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+
+            # Count assigned tasks across all projects
+            assigned_count = 0
+            for proj in data.get("projects", []):
+                ts = proj.get("task_summary", {})
+                assigned_count += ts.get("assigned", 0)
+
+            if assigned_count > 0:
+                next_step = NEXT_STEP_STATUS_ASSIGNED.format(n=assigned_count)
+            else:
+                next_step = NEXT_STEP_STATUS_DEFAULT
+
+            data["next_step"] = next_step
+            return json.dumps(data)
+        return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
+    except httpx.HTTPError as e:
+        return json.dumps(_make_error(None, str(e)))
+
+
 # ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
@@ -505,6 +748,86 @@ async def _run_mcp_server():
                     "required": ["agency_task_id", "callback_jwt", "output"],
                 },
             ),
+            types.Tool(
+                name="agency_list_projects",
+                description=(
+                    "List all projects in this Agency instance. Returns project IDs, "
+                    "names, and which project is the current default. Use this to "
+                    "discover available projects before calling agency_assign. See "
+                    "caller protocol: https://github.com/agentbureau/agency/blob/"
+                    "main/docs/integrations/caller-protocol.md"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            types.Tool(
+                name="agency_create_project",
+                description=(
+                    "Create a new Agency project. Only the project name is required; "
+                    "all other settings inherit from instance defaults if omitted. "
+                    "Returns the new project ID. See caller protocol: https://github.com/"
+                    "agentbureau/agency/blob/main/docs/integrations/caller-protocol.md"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255,
+                            "description": "Project name (required).",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional project description.",
+                        },
+                        "contact_email": {
+                            "type": "string",
+                            "description": "Optional contact email included in agent prompts.",
+                        },
+                        "oversight_preference": {
+                            "type": "string",
+                            "enum": ["discretion", "review"],
+                            "description": "How closely to review agent work.",
+                        },
+                        "error_notification_timeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional error notification timeout in seconds.",
+                        },
+                        "attribution": {
+                            "type": "boolean",
+                            "description": "Whether agent output includes an attribution line.",
+                        },
+                        "set_as_default": {
+                            "type": "boolean",
+                            "description": "Set this project as the default in agency.toml.",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            ),
+            types.Tool(
+                name="agency_status",
+                description=(
+                    "Get Agency instance status: projects, active tasks, task progress, "
+                    "and primitive store health. Use this to check what is happening in "
+                    "Agency and whether tasks are pending evaluation. See caller protocol: "
+                    "https://github.com/agentbureau/agency/blob/main/docs/integrations/"
+                    "caller-protocol.md"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Filter to a single project (optional).",
+                        },
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -530,6 +853,24 @@ async def _run_mcp_server():
                 score=arguments.get("score"),
                 task_completed=arguments.get("task_completed"),
                 score_type=arguments.get("score_type"),
+            )
+        elif name == "agency_list_projects":
+            result = _tool_agency_list_projects(base_url, token)
+        elif name == "agency_create_project":
+            result = _tool_agency_create_project(
+                base_url,
+                token,
+                arguments["name"],
+                description=arguments.get("description"),
+                contact_email=arguments.get("contact_email"),
+                oversight_preference=arguments.get("oversight_preference"),
+                error_notification_timeout=arguments.get("error_notification_timeout"),
+                attribution=arguments.get("attribution"),
+                set_as_default=arguments.get("set_as_default", False),
+            )
+        elif name == "agency_status":
+            result = _tool_agency_status(
+                base_url, token, project_id=arguments.get("project_id")
             )
         else:
             result = json.dumps(_make_error(None, f"Unknown tool: {name}"))

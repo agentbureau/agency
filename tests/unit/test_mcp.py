@@ -18,6 +18,9 @@ from agency.cli.mcp import (
     _tool_agency_assign,
     _tool_agency_evaluator,
     _tool_agency_submit_evaluation,
+    _tool_agency_list_projects,
+    _tool_agency_create_project,
+    _tool_agency_status,
 )
 
 
@@ -241,3 +244,244 @@ def test_call_with_retry_retries_once():
 
     assert mock_fn.call_count == 2
     mock_time.sleep.assert_called_once_with(2)
+
+
+# ---------------------------------------------------------------------------
+# _tool_agency_list_projects
+# ---------------------------------------------------------------------------
+
+
+def test_list_projects_tool_returns_projects():
+    """agency_list_projects returns enriched project list with default_source."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "projects": [{"id": "p1", "name": "Test", "description": None, "created_at": "2026-01-01"}],
+        "default_project_id": "p1",
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry, \
+         patch("agency.cli.mcp._find_repo_config", return_value=None), \
+         patch("agency.cli.mcp._read_toml_config", return_value={"project": {"default_id": "p1"}}):
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_list_projects("http://localhost:8000", "tok"))
+
+    assert "projects" in result
+    assert len(result["projects"]) == 1
+    assert result["projects"][0]["is_default"] is True
+    assert "next_step" in result
+    assert "default_source" in result
+    assert result["default_source"] == "toml_config"
+
+
+def test_list_projects_tool_empty():
+    """agency_list_projects with no projects returns empty list and create next_step."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "projects": [],
+        "default_project_id": None,
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry, \
+         patch("agency.cli.mcp._find_repo_config", return_value=None), \
+         patch("agency.cli.mcp._read_toml_config", return_value={}):
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_list_projects("http://localhost:8000", "tok"))
+
+    assert result["projects"] == []
+    assert "create" in result["next_step"].lower()
+    assert result["default_source"] == "none"
+
+
+def test_list_projects_tool_connection_error():
+    """agency_list_projects returns structured error on connection failure."""
+    import httpx as real_httpx
+
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.side_effect = real_httpx.ConnectError("Connection refused")
+        result = json.loads(_tool_agency_list_projects("http://localhost:8000", "tok"))
+
+    assert result["status"] == "error"
+    assert result["code"] is None
+
+
+# ---------------------------------------------------------------------------
+# _tool_agency_create_project
+# ---------------------------------------------------------------------------
+
+
+def test_create_project_tool_returns_project_id():
+    """agency_create_project renames id to project_id and includes next_step."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 201
+    mock_resp.json.return_value = {
+        "id": "new-uuid",
+        "name": "New Project",
+        "contact_email": None,
+        "oversight_preference": "discretion",
+        "error_notification_timeout": 1800,
+        "attribution": True,
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_create_project(
+            "http://localhost:8000", "tok", "New Project"))
+
+    assert result["project_id"] == "new-uuid"
+    assert result["name"] == "New Project"
+    assert "next_step" in result
+    assert "settings_applied" in result
+
+
+def test_create_project_tool_empty_name_error():
+    """agency_create_project returns error for empty name without calling API."""
+    result = json.loads(_tool_agency_create_project(
+        "http://localhost:8000", "tok", ""))
+
+    assert result["status"] == "error"
+    assert result["code"] == 400
+    assert "name" in result["message"].lower()
+
+
+def test_create_project_tool_duplicate_name():
+    """agency_create_project returns 409 for duplicate project name."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 409
+    mock_resp.json.return_value = {
+        "detail": {
+            "error": "duplicate_name",
+            "message": 'A project named "Existing" already exists.',
+            "existing_project_id": "existing-uuid",
+        }
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_create_project(
+            "http://localhost:8000", "tok", "Existing"))
+
+    assert result["status"] == "error"
+    assert result["code"] == 409
+    assert "Existing" in result["message"]
+
+
+def test_create_project_tool_set_as_default(tmp_path, monkeypatch):
+    """agency_create_project with set_as_default writes to agency.toml."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 201
+    mock_resp.json.return_value = {"id": "default-uuid", "name": "Default Project"}
+
+    toml_path = tmp_path / "agency.toml"
+    toml_path.write_text("")
+
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry, \
+         patch("agency.cli.mcp._get_config_file_path", return_value=str(toml_path)):
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_create_project(
+            "http://localhost:8000", "tok", "Default Project", set_as_default=True))
+
+    assert result["project_id"] == "default-uuid"
+    assert result["is_default"] is True
+
+    # Verify toml was written
+    import tomllib
+    with open(toml_path, "rb") as f:
+        cfg = tomllib.load(f)
+    assert cfg["project"]["default_id"] == "default-uuid"
+
+
+def test_create_project_tool_connection_error():
+    """agency_create_project returns structured error on connection failure."""
+    import httpx as real_httpx
+
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.side_effect = real_httpx.ConnectError("Connection refused")
+        result = json.loads(_tool_agency_create_project(
+            "http://localhost:8000", "tok", "Test"))
+
+    assert result["status"] == "error"
+    assert result["code"] is None
+
+
+# ---------------------------------------------------------------------------
+# _tool_agency_status
+# ---------------------------------------------------------------------------
+
+
+def test_status_tool_returns_instance_info():
+    """agency_status returns instance info with context-sensitive next_step."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "instance_id": "inst-1",
+        "server_version": "1.2.1",
+        "uptime_seconds": 100,
+        "projects": [],
+        "primitive_counts": {},
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_status("http://localhost:8000", "tok"))
+
+    assert "instance_id" in result
+    assert result["instance_id"] == "inst-1"
+    assert "next_step" in result
+    assert "agency_assign" in result["next_step"]
+
+
+def test_status_tool_assigned_tasks_next_step():
+    """agency_status next_step mentions assigned task count when tasks exist."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "instance_id": "inst-1",
+        "server_version": "1.2.1",
+        "uptime_seconds": 100,
+        "projects": [
+            {
+                "id": "p1",
+                "name": "Test",
+                "is_default": True,
+                "task_summary": {"total": 5, "assigned": 3, "evaluation_pending": 1, "evaluation_received": 1},
+                "active_tasks": [],
+            }
+        ],
+        "primitive_counts": {},
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_status("http://localhost:8000", "tok"))
+
+    assert "3 tasks are assigned" in result["next_step"]
+    assert "agency_evaluator" in result["next_step"]
+
+
+def test_status_tool_with_project_id_filter():
+    """agency_status passes project_id as query param."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "instance_id": "inst-1",
+        "server_version": "1.2.1",
+        "uptime_seconds": 100,
+        "projects": [],
+        "primitive_counts": {},
+    }
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        _tool_agency_status("http://localhost:8000", "tok", project_id="p1")
+
+    # Verify the URL includes the project_id query param
+    call_args = mock_retry.call_args
+    url_arg = call_args[0][1]
+    assert "project_id=p1" in url_arg
+
+
+def test_status_tool_connection_error():
+    """agency_status returns structured error on connection failure."""
+    import httpx as real_httpx
+
+    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+        mock_retry.side_effect = real_httpx.ConnectError("Connection refused")
+        result = json.loads(_tool_agency_status("http://localhost:8000", "tok"))
+
+    assert result["status"] == "error"
+    assert result["code"] is None
