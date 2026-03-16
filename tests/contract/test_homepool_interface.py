@@ -58,12 +58,12 @@ def test_evaluation_report_score_is_numeric():
     report = EvaluationReport(
         output="Evaluation output.",
         task_id="t", evaluator_agent_id="e", evaluator_agent_content_hash="h",
-        task_completed=True, score_type="percentage", score=72.5,
+        task_completed=True, score_type="percentage", score=73,
         time_taken_seconds=45, estimated_tokens=800,
         task_agent={"model_provider": "anthropic", "model_name": "claude-sonnet-4-6"},
         evaluator_agent={"model_provider": "anthropic", "model_name": "claude-sonnet-4-6"},
     )
-    assert isinstance(report.score, float)
+    assert isinstance(report.score, int)
 
 
 def test_jwt_expiry_is_enforced(keypair):
@@ -73,7 +73,7 @@ def test_jwt_expiry_is_enforced(keypair):
     now = int(time.time())
     token = create_evaluator_jwt(
         private_key, instance_id="i", client_id="c",
-        project_id="p", task_id="t", exp_seconds=-1
+        project_id="p", task_id="t", exp_seconds=-120  # well past 60s leeway
     )
     import jwt as pyjwt
     with pytest.raises(pyjwt.exceptions.ExpiredSignatureError):

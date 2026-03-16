@@ -10,10 +10,14 @@ import hashlib
 import json
 import os
 import sys
+import time
 from typing import Optional
 
 import click
 import httpx
+
+
+MCP_RETRY_DELAY = 2  # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +88,17 @@ def _check_health(base_url: str) -> bool:
         return False
 
 
-def _make_error(code: Optional[int], message: str) -> dict:
-    return {"status": "error", "code": code, "message": message}
+def _make_error(code: Optional[int], message: str, cause: Optional[str] = None, fix: Optional[str] = None) -> dict:
+    return {"status": "error", "code": code, "message": message, "cause": cause, "fix": fix}
+
+
+def _call_with_retry(fn, *args, **kwargs):
+    """Call fn, retry once after MCP_RETRY_DELAY on connection error."""
+    try:
+        return fn(*args, **kwargs)
+    except httpx.ConnectError:
+        time.sleep(MCP_RETRY_DELAY)
+        return fn(*args, **kwargs)
 
 
 def _make_success(**kwargs) -> dict:

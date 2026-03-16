@@ -27,10 +27,14 @@ from agency.cli.mcp import (
 
 def test_error_envelope_format():
     err = _make_error(404, "not found")
-    assert err == {"status": "error", "code": 404, "message": "not found"}
+    assert err == {"status": "error", "code": 404, "message": "not found", "cause": None, "fix": None}
 
     err_none = _make_error(None, "connection refused")
-    assert err_none == {"status": "error", "code": None, "message": "connection refused"}
+    assert err_none == {"status": "error", "code": None, "message": "connection refused", "cause": None, "fix": None}
+
+    err_with_cause = _make_error(503, "no primitives", cause="store empty", fix="run update")
+    assert err_with_cause["cause"] == "store empty"
+    assert err_with_cause["fix"] == "run update"
 
     ok = _make_success(assignment={"id": "abc"})
     assert ok == {"status": "ok", "assignment": {"id": "abc"}}

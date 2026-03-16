@@ -47,14 +47,15 @@ def test_revoked_token_rejected(keypair, db_with_token):
         check_token(token, public_key, conn)
 
 
-def test_evaluator_jwt_no_jti_passes_revocation_check(keypair, db_with_token):
+def test_evaluator_jwt_with_jti_passes_revocation_check(keypair, db_with_token):
+    """v1.2.1: evaluator JWTs now include jti for single-use enforcement."""
     private_key, public_key = keypair
     conn, _ = db_with_token
     token = create_evaluator_jwt(private_key, "inst-1", "client-1", "proj-1", "task-1")
     from agency.api.middleware import check_token
     payload = check_token(token, public_key, conn)
     assert payload["task_id"] == "task-1"
-    assert "jti" not in payload
+    assert "jti" in payload  # v1.2.1: evaluator JWTs have jti
 
 
 def test_missing_auth_header_raises(keypair, db_with_token):
