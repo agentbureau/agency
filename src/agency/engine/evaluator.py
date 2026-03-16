@@ -54,6 +54,27 @@ def build_evaluator(
 
     composition_hash = content_hash("eval:" + "".join(sorted(role_component_ids)))
 
+    # Look up task agent composition for JWT metadata
+    from agency.db.tasks import get_task as _get_task
+    from agency.db.compositions import get_agent
+    import json as _json
+
+    task_record = _get_task(db, task_id)
+    task_agent_composition_id = task_record.get("agent_composition_id", "") if task_record else ""
+
+    task_agent_content_hash = ""
+    task_agent_primitive_ids = {}
+    if task_agent_composition_id:
+        task_agent = get_agent(db, task_agent_composition_id)
+        if task_agent:
+            task_agent_content_hash = task_agent.get("content_hash", "")
+            rc_ids = _json.loads(task_agent.get("role_component_ids", "[]"))
+            task_agent_primitive_ids = {
+                "role_components": rc_ids,
+                "desired_outcomes": [task_agent.get("desired_outcome_id")] if task_agent.get("desired_outcome_id") else [],
+                "trade_off_configs": [task_agent.get("trade_off_config_id")] if task_agent.get("trade_off_config_id") else [],
+            }
+
     if private_key is not None:
         callback_jwt = create_evaluator_jwt(
             private_key,
@@ -61,6 +82,11 @@ def build_evaluator(
             client_id=client_id or "",
             project_id=project_id or "",
             task_id=task_id,
+            agent_composition_id=task_agent_composition_id,
+            agent_content_hash=task_agent_content_hash,
+            evaluator_agent_id=evaluator_agent_id,
+            evaluator_content_hash=composition_hash,
+            task_agent_primitive_ids=task_agent_primitive_ids,
         )
     else:
         callback_jwt = ""

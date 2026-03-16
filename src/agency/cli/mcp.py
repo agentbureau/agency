@@ -1,14 +1,15 @@
 """Agency MCP server — stdio transport for Claude Code.
 
-Exposes three tools:
-  - agency_assign: assign tasks to AI agents
+Exposes tools for the assign → execute → evaluate loop:
+  - agency_assign: compose agents for tasks, return prompts
   - agency_evaluator: get evaluator prompt + callback JWT
-  - agency_submit_evaluation: submit evaluation with content hash verification
+  - agency_submit_evaluation: submit evaluation with structured metadata
 """
 import asyncio
 import hashlib
 import json
 import os
+import pathlib
 import sys
 import time
 from typing import Optional
@@ -17,7 +18,34 @@ import click
 import httpx
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 MCP_RETRY_DELAY = 2  # seconds
+MCP_SERVER_NAME = "agency"
+PER_REPO_CONFIG_FILE = ".agency-project"
+AGENCY_TASK_ID_NOTE = (
+    "Use this agency_task_id (not your external_id) when calling "
+    "agency_evaluator and agency_submit_evaluation."
+)
+NEXT_STEP_ASSIGN = (
+    "You must now execute each task yourself. For each task: "
+    "(1) read the rendered_prompt from the agents map using the agent_hash; "
+    "(2) adopt that prompt as your operating instructions; "
+    "(3) do the work. When all tasks are complete, call agency_evaluator "
+    "with each task's agency_task_id to get the evaluation prompt."
+)
+NEXT_STEP_EVALUATOR = (
+    "Evaluate the output you produced for this task by following the "
+    "evaluator_prompt instructions. Then call agency_submit_evaluation with: "
+    "agency_task_id, callback_jwt, output (your evaluation text), and "
+    "optionally score, task_completed, and score_type."
+)
+NEXT_STEP_SUBMIT = (
+    "Evaluation recorded. The content_hash confirms what Agency received. "
+    "The assign-execute-evaluate loop for this task is complete."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -38,11 +66,35 @@ def _read_toml_config() -> dict:
         return {}
 
 
+def _get_config_file_path() -> str:
+    state_dir = os.environ.get("AGENCY_STATE_DIR", os.path.expanduser("~/.agency"))
+    return os.path.join(state_dir, "agency.toml")
+
+
+def _find_repo_config() -> Optional[str]:
+    """Search CWD and parents for .agency-project file. Returns file path or None."""
+    cwd = pathlib.Path.cwd()
+    for directory in [cwd] + list(cwd.parents):
+        candidate = directory / PER_REPO_CONFIG_FILE
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def _resolve_project_id(project_id: Optional[str]) -> Optional[str]:
-    """Priority: 1. explicit arg, 2. AGENCY_PROJECT_ID env var,
-    3. agency.toml [project] default_id, 4. None."""
+    """Priority: 1. explicit arg, 2. .agency-project, 3. AGENCY_PROJECT_ID env,
+    4. agency.toml [project] default_id, 5. None."""
     if project_id is not None:
         return project_id
+    repo_config = _find_repo_config()
+    if repo_config:
+        try:
+            with open(repo_config) as f:
+                val = f.read().strip()
+            if val:
+                return val
+        except Exception:
+            pass
     env_val = os.environ.get("AGENCY_PROJECT_ID")
     if env_val:
         return env_val
@@ -101,6 +153,16 @@ def _call_with_retry(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 
+def _connection_error(base_url: str) -> str:
+    cfg_file = _get_config_file_path()
+    return json.dumps(_make_error(
+        None,
+        f"Cannot reach Agency server at {base_url}.",
+        cause="The server is not running, or is running on a different host/port.",
+        fix=f"Start the server: agency serve. Verify: curl {base_url}/health. Config: {cfg_file}",
+    ))
+
+
 def _make_success(**kwargs) -> dict:
     return {"status": "ok", **kwargs}
 
@@ -113,26 +175,59 @@ def _make_success(**kwargs) -> dict:
 def _tool_agency_assign(
     base_url: str, token: str, project_id: Optional[str], tasks: list
 ) -> str:
-    """POST /projects/{id}/assign with Bearer token. Returns JSON envelope string."""
+    """POST /projects/{id}/assign — compose agents for tasks."""
     resolved = _resolve_project_id(project_id)
     if resolved is None:
-        return json.dumps(
-            _make_error(
-                None,
-                "No project ID: pass project_id, set AGENCY_PROJECT_ID, "
-                "or configure [project] default_id in agency.toml",
-            )
-        )
+        return json.dumps(_make_error(
+            None,
+            "No project ID provided.",
+            cause=(
+                "No project_id argument, no .agency-project file, "
+                "no AGENCY_PROJECT_ID env var, and no default_id in agency.toml."
+            ),
+            fix=(
+                "Pass project_id, create .agency-project in your repo root, "
+                "set AGENCY_PROJECT_ID, or configure [project] default_id in agency.toml."
+            ),
+        ))
+    if not tasks:
+        return json.dumps(_make_error(
+            400,
+            "The tasks array is empty.",
+            cause="No task objects provided in the tasks parameter.",
+            fix="Provide at least one task with external_id and description.",
+        ))
     try:
-        resp = httpx.post(
+        resp = _call_with_retry(
+            httpx.post,
             f"{base_url}/projects/{resolved}/assign",
             json={"tasks": tasks},
             headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
         if resp.status_code == 200:
-            return json.dumps(_make_success(assignment=resp.json()))
+            data = resp.json()
+            for _ext_id, assignment in data.get("assignments", {}).items():
+                assignment["agency_task_id_note"] = AGENCY_TASK_ID_NOTE
+            data["next_step"] = NEXT_STEP_ASSIGN
+            return json.dumps(data)
+        if resp.status_code == 503:
+            return json.dumps(_make_error(
+                503,
+                "Agency has no primitives loaded.",
+                cause="The primitive store is empty — agent composition requires at least one primitive.",
+                fix="Run: agency primitives update",
+            ))
+        if resp.status_code == 404:
+            return json.dumps(_make_error(
+                404,
+                f"Project ID not found: {resolved}.",
+                cause="No project with this ID exists in the database.",
+                fix="List available projects with agency_list_projects or check agency.toml [project] default_id.",
+            ))
         return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
     except httpx.HTTPError as e:
         return json.dumps(_make_error(None, str(e)))
 
@@ -140,64 +235,121 @@ def _tool_agency_assign(
 def _tool_agency_evaluator(
     base_url: str, token: str, agency_task_id: str
 ) -> str:
-    """GET /tasks/{id}/evaluator with Bearer token."""
+    """GET /tasks/{id}/evaluator — get evaluator prompt and callback JWT."""
     try:
-        resp = httpx.get(
+        resp = _call_with_retry(
+            httpx.get,
             f"{base_url}/tasks/{agency_task_id}/evaluator",
             headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
         if resp.status_code == 200:
             data = resp.json()
-            return json.dumps(
-                _make_success(
-                    evaluator_prompt=data["rendered_prompt"],
-                    callback_jwt=data["callback_jwt"],
-                )
-            )
+            return json.dumps({
+                "evaluator_prompt": data["rendered_prompt"],
+                "callback_jwt": data["callback_jwt"],
+                "agency_task_id": agency_task_id,
+                "next_step": NEXT_STEP_EVALUATOR,
+            })
         if resp.status_code == 404:
-            return json.dumps(_make_error(404, "task not found"))
+            return json.dumps(_make_error(
+                404,
+                f"Task not found for agency_task_id: {agency_task_id}.",
+                cause=(
+                    "The ID does not match any task. Most common mistake: "
+                    "passing your external_id instead of the agency_task_id "
+                    "returned by agency_assign."
+                ),
+                fix="Check the agency_assign response — use the agency_task_id field, not external_id.",
+            ))
         if resp.status_code == 422:
-            return json.dumps(_make_error(422, "task has no evaluator assigned"))
+            return json.dumps(_make_error(
+                422,
+                f"No evaluator assigned for task {agency_task_id}.",
+                cause="The agent composition for this task did not include an evaluator component.",
+                fix=(
+                    "This task cannot be evaluated through Agency. "
+                    "Proceed without evaluation, or re-assign with a different task description."
+                ),
+            ))
         return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
     except httpx.HTTPError as e:
         return json.dumps(_make_error(None, str(e)))
 
 
 def _tool_agency_submit_evaluation(
-    base_url: str, agency_task_id: str, callback_jwt: str, output: str
+    base_url: str,
+    token: str,
+    agency_task_id: str,
+    callback_jwt: str,
+    output: str,
+    score: Optional[int] = None,
+    task_completed: Optional[bool] = None,
+    score_type: Optional[str] = None,
 ) -> str:
-    """POST /tasks/{id}/evaluation.
+    """POST /tasks/{id}/evaluation — submit evaluation with dual JWT auth."""
+    # Hash body WITHOUT callback_jwt (server hashes without it)
+    hash_body: dict = {"output": output}
+    if score is not None:
+        hash_body["score"] = score
+    if task_completed is not None:
+        hash_body["task_completed"] = task_completed
+    if score_type is not None:
+        hash_body["score_type"] = score_type
+    hash_bytes = json.dumps(hash_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    local_hash = hashlib.sha256(hash_bytes).hexdigest()
 
-    CRITICAL: serialize body_bytes ONCE and reuse for both HTTP body and
-    local hash — prevents hash mismatch from double serialization.
-    """
-    body_bytes = json.dumps(
-        {"output": output}, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-    local_hash = hashlib.sha256(body_bytes).hexdigest()
+    # Send body WITH callback_jwt for server-side extraction
+    send_body = {**hash_body, "callback_jwt": callback_jwt}
+    body_bytes = json.dumps(send_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     try:
-        resp = httpx.post(
+        resp = _call_with_retry(
+            httpx.post,
             f"{base_url}/tasks/{agency_task_id}/evaluation",
             content=body_bytes,
             headers={
-                "Authorization": f"Bearer {callback_jwt}",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
             timeout=30,
         )
         if resp.status_code == 200:
-            server_hash = resp.json().get("content_hash")
-            if server_hash != local_hash:
-                return json.dumps(
-                    _make_error(
-                        None,
-                        f"Content hash mismatch: local={local_hash} server={server_hash}",
-                    )
-                )
-            return json.dumps(_make_success(content_hash=local_hash))
+            server_data = resp.json()
+            return json.dumps({
+                "status": "accepted",
+                "content_hash": server_data.get("content_hash", local_hash),
+                "next_step": NEXT_STEP_SUBMIT,
+            })
+        if resp.status_code == 404:
+            return json.dumps(_make_error(
+                404,
+                f"Task not found for agency_task_id: {agency_task_id}.",
+                cause="The ID does not match any task. Most common mistake: passing external_id instead of agency_task_id.",
+                fix="Check the agency_assign response — use the agency_task_id field.",
+            ))
+        if resp.status_code == 401:
+            return json.dumps(_make_error(
+                401,
+                "Callback JWT is invalid, expired, or already used.",
+                cause=(
+                    "Each callback_jwt from agency_evaluator is single-use. "
+                    "This JWT may have expired (24h TTL) or been consumed by a prior submission."
+                ),
+                fix="Call agency_evaluator with agency_task_id to get a new callback_jwt, then call agency_submit_evaluation again.",
+            ))
+        if resp.status_code == 422:
+            try:
+                detail = resp.json().get("detail", {})
+                msg = detail.get("message", resp.text) if isinstance(detail, dict) else resp.text
+            except Exception:
+                msg = resp.text
+            return json.dumps(_make_error(422, msg))
         return json.dumps(_make_error(resp.status_code, resp.text))
+    except httpx.ConnectError:
+        return _connection_error(base_url)
     except httpx.HTTPError as e:
         return json.dumps(_make_error(None, str(e)))
 
@@ -217,36 +369,62 @@ async def _run_mcp_server():
 
     if not _check_health(base_url):
         print(
-            f"Error: Agency server not reachable at {base_url}. "
-            "Run 'agency serve' first.",
+            f"Agency server not responding at {base_url}. Start it with: agency serve",
             file=sys.stderr,
         )
-        sys.exit(1)
+        # Continue startup — server may come up later
 
-    server = Server("agency")
+    server = Server(MCP_SERVER_NAME)
 
     @server.list_tools()
     async def list_tools():
         return [
             types.Tool(
                 name="agency_assign",
-                description="Assign tasks to AI agents via the Agency server.",
+                description=(
+                    "Compose AI agents for a set of tasks and return their prompts. "
+                    "Agency is a prompt composer — it does NOT execute tasks. You (the "
+                    "requester) must execute each task yourself using the returned "
+                    "rendered_prompt as your operating instructions. After execution, "
+                    "call agency_evaluator for each task to get the evaluation prompt. "
+                    "Full caller protocol: https://github.com/agentbureau/agency/blob/"
+                    "main/docs/integrations/caller-protocol.md"
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "project_id": {
                             "type": "string",
-                            "description": "Project ID (optional — defaults to AGENCY_PROJECT_ID env or agency.toml)",
+                            "description": (
+                                "Project ID (optional). Falls back to: "
+                                ".agency-project > AGENCY_PROJECT_ID env var > "
+                                "agency.toml [project] default_id."
+                            ),
                         },
                         "tasks": {
                             "type": "array",
+                            "minItems": 1,
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "external_id": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "skills": {"type": "array", "items": {"type": "string"}},
-                                    "deliverables": {"type": "array", "items": {"type": "string"}},
+                                    "external_id": {
+                                        "type": "string",
+                                        "description": "Your identifier for this task. Used as a key in the response.",
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "What the task requires. Agency uses this to select primitives and compose the agent.",
+                                    },
+                                    "skills": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Optional skill tags to influence primitive selection.",
+                                    },
+                                    "deliverables": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Optional list of expected outputs.",
+                                    },
                                 },
                                 "required": ["external_id", "description"],
                             },
@@ -258,13 +436,25 @@ async def _run_mcp_server():
             ),
             types.Tool(
                 name="agency_evaluator",
-                description="Get the evaluator prompt and callback JWT for a completed task.",
+                description=(
+                    "Get the evaluator prompt and callback JWT for a completed task. "
+                    "Agency does NOT track execution state — there is no 'execution "
+                    "pipeline' or completion precondition. Pass the agency_task_id "
+                    "returned by agency_assign (not your own external_id). After "
+                    "receiving the evaluator prompt, evaluate your own output against "
+                    "its criteria, then call agency_submit_evaluation with the result. "
+                    "See caller protocol: https://github.com/agentbureau/agency/blob/"
+                    "main/docs/integrations/caller-protocol.md"
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "agency_task_id": {
                             "type": "string",
-                            "description": "The Agency task ID to get evaluator info for",
+                            "description": (
+                                "The agency_task_id returned by agency_assign for this task. "
+                                "Do not pass your own external_id."
+                            ),
                         },
                     },
                     "required": ["agency_task_id"],
@@ -272,21 +462,44 @@ async def _run_mcp_server():
             ),
             types.Tool(
                 name="agency_submit_evaluation",
-                description="Submit evaluation output for a task, with content hash verification.",
+                description=(
+                    "Submit your evaluation of a completed task. Pass the agency_task_id "
+                    "and callback_jwt from agency_evaluator, plus your evaluation output "
+                    "text. Optionally include score (0-100), task_completed (true/false), "
+                    "and score_type to record structured assessment. The callback JWT "
+                    "carries all agent metadata — you do not need to supply it. See "
+                    "caller protocol: https://github.com/agentbureau/agency/blob/main/"
+                    "docs/integrations/caller-protocol.md"
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "agency_task_id": {
                             "type": "string",
-                            "description": "The Agency task ID",
+                            "description": "The agency_task_id returned by agency_assign for this task.",
                         },
                         "callback_jwt": {
                             "type": "string",
-                            "description": "The callback JWT from agency_evaluator",
+                            "description": "The callback_jwt returned by agency_evaluator. Single-use; expires after 24 hours.",
                         },
                         "output": {
                             "type": "string",
-                            "description": "The evaluation output text",
+                            "description": "Your evaluation text, written by following the evaluator_prompt instructions.",
+                        },
+                        "score": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "Optional numeric score (0-100).",
+                        },
+                        "task_completed": {
+                            "type": "boolean",
+                            "description": "Optional: whether the task was fully completed.",
+                        },
+                        "score_type": {
+                            "type": "string",
+                            "enum": ["binary", "rubric", "likert", "percentage"],
+                            "description": "Optional: how the score should be interpreted.",
                         },
                     },
                     "required": ["agency_task_id", "callback_jwt", "output"],
@@ -310,9 +523,13 @@ async def _run_mcp_server():
         elif name == "agency_submit_evaluation":
             result = _tool_agency_submit_evaluation(
                 base_url,
+                token,
                 arguments["agency_task_id"],
                 arguments["callback_jwt"],
                 arguments["output"],
+                score=arguments.get("score"),
+                task_completed=arguments.get("task_completed"),
+                score_type=arguments.get("score_type"),
             )
         else:
             result = json.dumps(_make_error(None, f"Unknown tool: {name}"))
