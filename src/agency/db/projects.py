@@ -34,6 +34,14 @@ def create_project(
     return pid
 
 
+def list_projects(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM projects ORDER BY created_at").fetchall()
+    if not rows:
+        return []
+    cols = [d[0] for d in conn.execute("SELECT * FROM projects LIMIT 0").description]
+    return [dict(zip(cols, row)) for row in rows]
+
+
 def get_project(conn: sqlite3.Connection, project_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if row is None:

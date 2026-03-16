@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
-from agency.db.projects import create_project, get_project
+from agency.db.projects import create_project, get_project, list_projects
 from agency.db.tasks import create_task, set_task_composition
 from agency.models.tasks import BatchAssignRequest, BatchAssignResponse
 from agency.utils.errors import PrimitiveStoreEmpty
@@ -16,18 +16,59 @@ class ProjectCreate(BaseModel):
     client_id: str | None = None
     description: str | None = None
     admin_email: str | None = None
+    contact_email: str | None = None
+    oversight_preference: str | None = None
+    error_notification_timeout: int | None = None
+    attribution: bool | None = None
+
+
+@router.get("")
+def list_projects_route(request: Request):
+    projects = list_projects(request.app.state.db)
+    cfg = getattr(request.app.state, "config", {})
+    default_id = cfg.get("project", {}).get("default_id")
+    return {"projects": projects, "default_project_id": default_id}
 
 
 @router.post("", status_code=201)
 def create_project_route(req: ProjectCreate, request: Request):
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail={
+            "error": "validation_error",
+            "message": "Project name is required.",
+        })
+
+    if req.oversight_preference and req.oversight_preference not in ("discretion", "review"):
+        raise HTTPException(status_code=400, detail={
+            "error": "validation_error",
+            "message": "oversight_preference must be 'discretion' or 'review'.",
+        })
+
+    # Duplicate check (case-insensitive)
+    existing = list_projects(request.app.state.db)
+    for p in existing:
+        if p["name"].lower() == name.lower():
+            raise HTTPException(status_code=409, detail={
+                "error": "duplicate_name",
+                "message": f'A project named "{name}" already exists.',
+                "existing_project_id": p["id"],
+            })
+
     pid = create_project(
         request.app.state.db,
-        name=req.name,
+        name=name,
         client_id=req.client_id,
         description=req.description,
         admin_email=req.admin_email,
+        contact_email=req.contact_email,
+        oversight_preference=req.oversight_preference,
+        error_notification_timeout=req.error_notification_timeout,
+        attribution=1 if req.attribution else (0 if req.attribution is False else None),
     )
-    return {"project_id": pid, **req.model_dump()}
+    project = get_project(request.app.state.db, pid)
+    # Include project_id for backward compatibility (existing callers expect it)
+    return {**project, "project_id": pid}
 
 
 @router.get("/{project_id}")
