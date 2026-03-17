@@ -4,7 +4,7 @@ Agency integrates with Workgraph via shell-based translators that batch-assign o
 
 ## Prerequisites
 
-- Agency v1.2.1 or later installed (`pipx install agency-engine`)
+- Agency v1.2.2 or later installed (`pipx install agency-engine`)
 - `agency init` completed (Phase 1 and Phase 2)
 - `agency serve` running
 - A valid Workgraph token at `~/.agency-workgraph-token`
@@ -84,16 +84,36 @@ export AGENCY_PROJECT_ID="$(agency project list --format json | python3 -c 'impo
 wg service start
 ```
 
+### Alternative: CLI-based executor (v1.2.2)
+
+Instead of raw HTTP calls, executors can use the `agency task` CLI commands:
+
+```bash
+# Assign
+RESULT=$(agency task assign --tasks-file tasks.json --client-id workgraph --format json)
+
+# Extract task IDs
+echo "$RESULT" | python3 -c 'import sys,json; [print(t["agency_task_id"]) for t in json.load(sys.stdin)["task_ids"]]'
+
+# Get evaluator
+agency task evaluator --task-id "$AGENCY_TASK_ID" --save-jwt /tmp/jwt.txt --client-id workgraph
+
+# Submit evaluation
+agency task submit --task-id "$AGENCY_TASK_ID" --callback-jwt-file /tmp/jwt.txt --output-file eval.txt --client-id workgraph
+```
+
+The CLI handles token resolution, error classification, and exit codes automatically.
+
 ## Differences from MCP/Superpowers integration
 
-| | MCP (Superpowers) | Workgraph |
-|---|---|---|
-| **Transport** | MCP stdio (in-process) | HTTP API (shell scripts) |
-| **Assignment** | Per-tool-call | Batch (all open tasks) |
-| **Execution** | Claude Code session | `claude --print` subprocess |
-| **Evaluation** | Same Claude Code session | Separate `claude --print` subprocess |
-| **Token file** | `~/.agency-mcp-token` | `~/.agency-workgraph-token` |
-| **Prompt storage** | In-memory (MCP response) | `.workgraph/agency-prompts/` on disk |
+| | MCP (Superpowers) | CLI | Workgraph (HTTP) |
+|---|---|---|---|
+| **Transport** | MCP stdio (in-process) | Shell commands | HTTP API (shell scripts) |
+| **Assignment** | Per-tool-call | Per-command | Batch (all open tasks) |
+| **Execution** | Claude Code session | Subagent / script | `claude --print` subprocess |
+| **Evaluation** | Same Claude Code session | Same script | Separate subprocess |
+| **Token file** | `~/.agency-mcp-token` | `~/.agency-cli-token` | `~/.agency-workgraph-token` |
+| **Prompt storage** | In-memory (MCP response) | stdout JSON | `.workgraph/agency-prompts/` on disk |
 
 ## Token management
 

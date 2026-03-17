@@ -34,7 +34,34 @@ agency_assign({
 })
 ```
 
-Each task gets back a `rendered_prompt` (the agent composition) and an `agency_task_id`.
+Each task gets back a `rendered_prompt` (the agent composition) and an `agency_task_id`. The response includes a `task_ids` summary block for quick reference:
+
+```json
+{
+  "status": "ok",
+  "task_ids": [
+    {"external_id": "task-1", "agency_task_id": "uuid", "agent_hash": "sha256"}
+  ],
+  "assignments": { ... },
+  "agents": { ... }
+}
+```
+
+### 2b. Alternative: Assign via CLI (for subagents)
+
+Subagents that cannot call MCP tools can use the CLI instead:
+
+```bash
+agency task assign --tasks '[{"external_id": "task-1", "description": "..."}]' --format json
+```
+
+Or from a file:
+
+```bash
+agency task assign --tasks-file tasks.json --project-id <uuid>
+```
+
+The CLI returns the same JSON shape as the MCP tool. Use `agency task evaluator` and `agency task submit` for the evaluation loop.
 
 ### 3. Dispatch subagents with Agency prompts
 
