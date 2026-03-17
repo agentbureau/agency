@@ -2,7 +2,7 @@
 
 How Superpowers skills (brainstorming, writing-plans, subagent-driven-development, executing-plans) work with Agency to compose, dispatch, and evaluate agents.
 
-For general Claude Code MCP setup and tool reference, see [claude-code.md](claude-code.md).
+For general Claude Code MCP setup and tool reference, see [using agency as an MCP with claude code](using%20agency%20as%20an%20MCP%20with%20claude%20code.md).
 
 ## How Agency fits into the Superpowers workflow
 
