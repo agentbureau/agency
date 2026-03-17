@@ -617,6 +617,8 @@ async def _run_mcp_server():
         )
         # Continue startup — server may come up later
 
+    print(f"Agency MCP server started \u2014 connecting to API at {base_url}", file=sys.stderr)
+
     server = Server(MCP_SERVER_NAME)
 
     @server.list_tools()

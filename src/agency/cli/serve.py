@@ -38,6 +38,9 @@ def serve_command(host: str | None, port: int | None, reload: bool):
             cfg["server"]["port"] = port
             write_config(cfg, cfg_path)
 
+    click.echo(f"Agency server running at http://{resolved_host}:{resolved_port}")
+    click.echo(f"Health check: curl http://{resolved_host}:{resolved_port}/health")
+
     uvicorn.run(
         "agency.api.app:create_app",
         host=resolved_host,

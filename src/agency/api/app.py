@@ -112,7 +112,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "version": "1.2.0"}
+        import importlib.metadata
+        try:
+            version = importlib.metadata.version("agency-engine")
+        except importlib.metadata.PackageNotFoundError:
+            version = "dev"
+        return {"status": "ok", "version": version}
 
     from agency.api.routes import tasks, projects, primitives, evolution, status
     app.include_router(tasks.router)
