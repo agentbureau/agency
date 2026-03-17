@@ -38,8 +38,22 @@ def serve_command(host: str | None, port: int | None, reload: bool):
             cfg["server"]["port"] = port
             write_config(cfg, cfg_path)
 
-    click.echo(f"Agency server running at http://{resolved_host}:{resolved_port}")
-    click.echo(f"Health check: curl http://{resolved_host}:{resolved_port}/health")
+    import sys
+    url = f"http://{resolved_host}:{resolved_port}"
+    cfg_expanded = str(cfg_path.resolve())
+    state_expanded = str(state_dir.resolve())
+
+    # Structured banner (stdout — machine-readable)
+    print(
+        f"AGENCY_SERVER_START host={resolved_host} port={resolved_port} "
+        f"url={url} health={url}/health config={cfg_expanded} pid={os.getpid()}"
+    )
+    # Human-readable (stderr)
+    print(f"Agency server running at {url}", file=sys.stderr)
+    print(f"  Health check:  curl {url}/health", file=sys.stderr)
+    print(f"  Config:        {cfg_expanded}", file=sys.stderr)
+    print(f"  State dir:     {state_expanded}", file=sys.stderr)
+    print(f"  PID:           {os.getpid()}", file=sys.stderr)
 
     uvicorn.run(
         "agency.api.app:create_app",
