@@ -130,6 +130,31 @@ def test_agents_has_permission_block(tmp_path):
     assert "permission_block" in cols
 
 
+def test_agents_has_template_id_column(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cursor = conn.execute("PRAGMA table_info(agents)")
+    col_info = {row[1]: row for row in cursor.fetchall()}
+    assert "template_id" in col_info
+    # Check default value is 'default'
+    dflt = col_info["template_id"][4]  # dflt_value is index 4
+    assert dflt == "'default'"
+
+
+def test_template_id_migration_preserves_existing_agents(tmp_path):
+    """Existing agents should get template_id='default' after migration."""
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    # Insert an agent row
+    conn.execute(
+        """INSERT INTO agents (id, role_component_ids, content_hash, instance_id)
+           VALUES ('agent-1', '["rc-1"]', 'hash-1', 'inst-1')"""
+    )
+    conn.commit()
+    row = conn.execute("SELECT template_id FROM agents WHERE id = 'agent-1'").fetchone()
+    assert row[0] == "default"
+
+
 def test_projects_has_all_new_columns(tmp_path):
     conn = sqlite3.connect(tmp_path / "test.db")
     run_migrations(conn)

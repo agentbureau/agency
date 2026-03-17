@@ -162,3 +162,10 @@ def add_projects_and_tasks(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
     """)
+
+
+@migration
+def add_template_id_to_agents(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "ALTER TABLE agents ADD COLUMN template_id TEXT NOT NULL DEFAULT 'default'"
+    )

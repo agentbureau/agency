@@ -12,6 +12,7 @@ def upsert_agent(
     instance_id: str,
     client_id: str | None = None,
     project_id: str | None = None,
+    template_id: str = "default",
 ) -> str:
     hash_ = content_hash(json.dumps(sorted(role_component_ids)))
     existing = conn.execute(
@@ -23,10 +24,11 @@ def upsert_agent(
     conn.execute(
         """INSERT INTO agents
            (id, role_component_ids, desired_outcome_id, trade_off_config_id,
-            content_hash, instance_id, client_id, project_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            content_hash, instance_id, client_id, project_id, template_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (aid, json.dumps(role_component_ids), desired_outcome_id,
-         trade_off_config_id, hash_, instance_id, client_id, project_id),
+         trade_off_config_id, hash_, instance_id, client_id, project_id,
+         template_id),
     )
     conn.commit()
     return aid

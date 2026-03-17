@@ -41,17 +41,6 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
     trade_off_config = tradeoff_results[0]["description"] if tradeoff_results else "Balance quality and speed"
     trade_off_config_id = tradeoff_results[0]["id"] if tradeoff_results else None
 
-    # Upsert composition
-    agent_id = upsert_agent(
-        db,
-        role_component_ids=role_component_ids,
-        desired_outcome_id=desired_outcome_id,
-        trade_off_config_id=trade_off_config_id,
-        instance_id=instance_id,
-        client_id=client_id,
-        project_id=project_id,
-    )
-
     # Select template
     templates = list_templates(db, template_type="task_agent", instance_id=instance_id)
     if templates:
@@ -61,7 +50,19 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
         template_content = load_default_template("task_agent")
         template_id = "default"
 
-    composition_hash = content_hash("".join(sorted(role_component_ids)))
+    # Upsert composition
+    agent_id = upsert_agent(
+        db,
+        role_component_ids=role_component_ids,
+        desired_outcome_id=desired_outcome_id,
+        trade_off_config_id=trade_off_config_id,
+        instance_id=instance_id,
+        client_id=client_id,
+        project_id=project_id,
+        template_id=template_id,
+    )
+
+    composition_hash = content_hash(json.dumps(sorted(role_component_ids)))
 
     rendered = render_agent(
         template=template_content,
