@@ -1,5 +1,5 @@
-# Agency — specification v1.2.0
-*2026-03-13*
+# Agency — specification v1.2.1
+*2026-03-17*
 
 ---
 
