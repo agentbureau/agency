@@ -1,6 +1,8 @@
-"""agency init — two-phase setup wizard for Agency v1.2.0."""
+"""agency init — two-phase setup wizard for Agency v1.2.1."""
 import json
 import os
+import pathlib
+import shutil as _shutil
 import sqlite3
 import subprocess
 import sys
@@ -21,7 +23,7 @@ from agency.db.tokens import insert_token, revoke_tokens_by_client_id, token_tab
 
 WELCOME_BANNER = """
 ======================================================================
-                         Agency  v1.2.0
+                         Agency  v1.2.1
 ======================================================================
 
 Hello and welcome to Agency — your engine for building and
@@ -29,6 +31,13 @@ evolving AI agent teams.
 
 This setup wizard will take you through the installation and
 commissioning process for Agency.
+
+Agency was designed to be installed with pipx:
+  pipx install agency-engine
+
+If you installed with pip into a virtualenv, the `agency` command is only
+available while that venv is active. If you encounter "command not found"
+errors later, this is the most likely cause.
 
 --- What to expect -----------------------------------------------------
 
@@ -56,6 +65,13 @@ The wizard has 2 phases and 12 steps.
 
 ------------------------------------------------------------------------
 """
+
+
+FIELD_EXPLAINERS = {
+    "contact_email": "Email address included in agent prompts for accountability. Visible to agents.",
+    "oversight_preference": 'How closely you want to review agent work: "discretion" (agent decides) or "review" (flag for human review).',
+    "attribution": "Whether agent output includes an attribution line identifying Agency.",
+}
 
 
 def _phase1_complete(cfg: dict, state_dir: str) -> bool:
@@ -224,6 +240,7 @@ def _run_phase1(state_dir: str, toml_path: str, cfg: dict) -> dict:
 
     # Step 1.5 -- Configure output defaults
     _step_header(1, 5, 6)
+    click.echo(f"  → {FIELD_EXPLAINERS['attribution']}")
     if "output" in cfg:
         attr = "on" if cfg["output"].get("attribution", True) else "off"
         click.echo(f"Output config already set (attribution: {attr}).                    Skipping.")
@@ -325,11 +342,13 @@ def _step_configure_llm(cfg: dict, toml_path: str) -> dict:
 
 def _step_configure_notifications(cfg: dict, toml_path: str) -> dict:
     click.echo("Configure notifications.\n")
+    click.echo(f"  → {FIELD_EXPLAINERS['contact_email']}")
     contact_email = click.prompt("Contact email (Agency will notify this address)")
     timeout_raw = click.prompt(
         "Error notification timeout [1800 seconds / 30 minutes]", default="1800"
     )
     timeout = int(timeout_raw)
+    click.echo(f"  → {FIELD_EXPLAINERS['oversight_preference']}")
     click.echo("When a task description is unclear, should Agency:")
     click.echo("  (1) Use its discretion and proceed")
     click.echo("  (2) Stop and wait for clarification")
@@ -370,20 +389,50 @@ def _step_configure_notifications(cfg: dict, toml_path: str) -> dict:
     return cfg
 
 
+def _resolve_agency_binary() -> str | None:
+    """Resolve the absolute path to the agency binary.
+
+    Resolution order:
+    1. shutil.which("agency") resolved to absolute path
+    2. ~/.local/bin/agency (pipx default)
+    3. {sys.prefix}/bin/agency (current venv)
+    """
+    found = _shutil.which("agency")
+    if found:
+        return str(pathlib.Path(found).resolve())
+
+    pipx_path = os.path.expanduser("~/.local/bin/agency")
+    if os.path.isfile(pipx_path) and os.access(pipx_path, os.X_OK):
+        return str(pathlib.Path(pipx_path).resolve())
+
+    venv_path = os.path.join(sys.prefix, "bin", "agency")
+    if os.path.isfile(venv_path) and os.access(venv_path, os.X_OK):
+        return str(pathlib.Path(venv_path).resolve())
+
+    return None
+
+
 def _merge_mcp_registration(claude_json: str):
     """Merge Agency MCP entry into ~/.claude.json (back up first)."""
-    import shutil
+    agency_bin = _resolve_agency_binary()
+    if agency_bin is None:
+        click.echo(
+            "Could not find the agency binary. Ensure agency-engine is installed:\n"
+            "  pipx install agency-engine\n"
+            "Then re-run: agency init"
+        )
+        return
 
     token_path = os.path.expanduser("~/.agency-mcp-token")
     entry = {
-        "command": "agency",
+        "command": agency_bin,
         "args": ["mcp"],
         "env": {"AGENCY_TOKEN_FILE": token_path},
     }
 
     if os.path.exists(claude_json):
         try:
-            shutil.copy2(claude_json, claude_json + ".bak")
+            _shutil.copy2(claude_json, claude_json + ".bak")
             with open(claude_json) as f:
                 data = json.load(f)
         except (json.JSONDecodeError, IOError):
@@ -398,7 +447,11 @@ def _merge_mcp_registration(claude_json: str):
     data.setdefault("mcpServers", {})["agency"] = entry
     with open(claude_json, "w") as f:
         json.dump(data, f, indent=2)
-    click.echo("Agency registered in ~/.claude.json.                          Done")
+
+    claude_json_abs = str(pathlib.Path(claude_json).resolve())
+    click.echo(f"MCP server registered in {claude_json_abs}")
+    click.echo(f'  Binary: {agency_bin}')
+    click.echo(f'  Args: ["mcp"]')
 
 
 # -- Phase 2 steps -------------------------------------------------------

@@ -68,12 +68,102 @@ def test_init_mcp_registration_writes_absolute_token_path(tmp_path, monkeypatch)
     from agency.cli.init import _merge_mcp_registration
     monkeypatch.setenv("HOME", str(tmp_path))
     claude_json = str(tmp_path / ".claude.json")
-    _merge_mcp_registration(claude_json)
+    with patch("agency.cli.init._resolve_agency_binary", return_value="/usr/local/bin/agency"):
+        _merge_mcp_registration(claude_json)
     with open(claude_json) as f:
         data = json.load(f)
     token_path = data["mcpServers"]["agency"]["env"]["AGENCY_TOKEN_FILE"]
     assert token_path.startswith("/")
     assert "~" not in token_path
+
+
+def test_init_mcp_registration_writes_absolute_binary_path(tmp_path, monkeypatch):
+    """MCP registration writes an absolute path for the agency command, not bare 'agency'."""
+    from agency.cli.init import _merge_mcp_registration
+    monkeypatch.setenv("HOME", str(tmp_path))
+    claude_json = str(tmp_path / ".claude.json")
+    with patch("agency.cli.init._resolve_agency_binary", return_value="/home/user/.local/bin/agency"):
+        _merge_mcp_registration(claude_json)
+    with open(claude_json) as f:
+        data = json.load(f)
+    command = data["mcpServers"]["agency"]["command"]
+    assert command == "/home/user/.local/bin/agency"
+    assert command.startswith("/")
+
+
+def test_init_mcp_registration_aborts_if_binary_not_found(tmp_path, monkeypatch, capsys):
+    """MCP registration aborts with actionable error when agency binary cannot be found."""
+    from agency.cli.init import _merge_mcp_registration
+    monkeypatch.setenv("HOME", str(tmp_path))
+    claude_json = str(tmp_path / ".claude.json")
+    with patch("agency.cli.init._resolve_agency_binary", return_value=None):
+        _merge_mcp_registration(claude_json)
+    assert not os.path.exists(claude_json)
+
+
+def test_resolve_agency_binary_uses_which(monkeypatch):
+    """_resolve_agency_binary prefers shutil.which result."""
+    from agency.cli.init import _resolve_agency_binary
+    with patch("agency.cli.init._shutil.which", return_value="/opt/bin/agency"):
+        result = _resolve_agency_binary()
+    assert result is not None
+    assert "/opt/bin/agency" in result or "agency" in result
+
+
+def test_resolve_agency_binary_fallback_pipx(tmp_path, monkeypatch):
+    """_resolve_agency_binary falls back to ~/.local/bin/agency."""
+    from agency.cli.init import _resolve_agency_binary
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pipx_bin = tmp_path / ".local" / "bin"
+    pipx_bin.mkdir(parents=True)
+    agency_bin = pipx_bin / "agency"
+    agency_bin.write_text("#!/bin/sh\n")
+    agency_bin.chmod(0o755)
+    with patch("agency.cli.init._shutil.which", return_value=None):
+        result = _resolve_agency_binary()
+    assert result is not None
+    assert "agency" in result
+
+
+def test_welcome_banner_contains_pipx_preamble():
+    """Welcome banner includes pipx install recommendation."""
+    from agency.cli.init import WELCOME_BANNER
+    assert "pipx install agency-engine" in WELCOME_BANNER
+    assert "command not found" in WELCOME_BANNER
+
+
+def test_field_explainers_has_required_keys():
+    """FIELD_EXPLAINERS dict contains all required field explainers."""
+    from agency.cli.init import FIELD_EXPLAINERS
+    assert "contact_email" in FIELD_EXPLAINERS
+    assert "oversight_preference" in FIELD_EXPLAINERS
+    assert "attribution" in FIELD_EXPLAINERS
+
+
+def test_init_phase1_shows_field_explainers(tmp_path, monkeypatch):
+    """Phase 1 output contains field explainer arrows."""
+    state_dir = _make_state_dir(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = CliRunner()
+    inputs = "\n".join([
+        "",           # press enter to begin
+        "2",          # select API backend
+        "claude-sonnet-4-6",
+        "sk-test-key",
+        "test@example.com",
+        "",           # default timeout
+        "1",          # discretion
+        "n",          # no smtp
+        "n",          # no MCP registration
+        "n",          # don't continue to phase 2
+        "",
+    ])
+    result = runner.invoke(init_command, input=inputs)
+    from agency.cli.init import FIELD_EXPLAINERS
+    assert FIELD_EXPLAINERS["contact_email"] in result.output
+    assert FIELD_EXPLAINERS["oversight_preference"] in result.output
+    assert FIELD_EXPLAINERS["attribution"] in result.output
 
 
 def test_poll_health_uses_half_second_interval():
