@@ -13,14 +13,18 @@ from unittest.mock import patch, MagicMock
 from agency.cli.mcp import (
     _read_toml_config,
     _resolve_project_id,
-    _make_error,
-    _make_success,
     _tool_agency_assign,
     _tool_agency_evaluator,
     _tool_agency_submit_evaluation,
+    _tool_agency_get_task,
     _tool_agency_list_projects,
     _tool_agency_create_project,
     _tool_agency_status,
+)
+
+from agency.client import (
+    _make_error,
+    _classify_error,
 )
 
 
@@ -30,21 +34,39 @@ from agency.cli.mcp import (
 
 
 def test_error_envelope_format():
-    err = _make_error(404, "not found")
-    assert err == {"status": "error", "code": 404, "message": "not found", "cause": None, "fix": None}
+    err = _make_error("not_found", 404, "not found")
+    assert err == {
+        "status": "error", "error_type": "not_found", "code": 404,
+        "message": "not found", "cause": None, "fix": None,
+    }
 
-    err_none = _make_error(None, "connection refused")
-    assert err_none == {"status": "error", "code": None, "message": "connection refused", "cause": None, "fix": None}
+    err_none = _make_error("transient", None, "connection refused")
+    assert err_none == {
+        "status": "error", "error_type": "transient", "code": None,
+        "message": "connection refused", "cause": None, "fix": None,
+    }
 
-    err_with_cause = _make_error(503, "no primitives", cause="store empty", fix="run update")
+    err_with_cause = _make_error("transient", 503, "no primitives", cause="store empty", fix="run update")
     assert err_with_cause["cause"] == "store empty"
     assert err_with_cause["fix"] == "run update"
+    assert err_with_cause["error_type"] == "transient"
 
-    ok = _make_success(assignment={"id": "abc"})
-    assert ok == {"status": "ok", "assignment": {"id": "abc"}}
 
-    ok_multi = _make_success(content_hash="deadbeef", verified=True)
-    assert ok_multi == {"status": "ok", "content_hash": "deadbeef", "verified": True}
+def test_classify_error_status_codes():
+    assert _classify_error(503) == "transient"
+    assert _classify_error(401) == "auth"
+    assert _classify_error(404) == "not_found"
+    assert _classify_error(400) == "validation"
+    assert _classify_error(422) == "validation"
+    assert _classify_error(409) == "validation"
+    assert _classify_error(500) == "permanent"
+
+
+def test_classify_error_exceptions():
+    import httpx as real_httpx
+    assert _classify_error(None, exception=real_httpx.ConnectError("refused")) == "transient"
+    assert _classify_error(None, exception=real_httpx.ReadTimeout("timeout")) == "transient"
+    assert _classify_error(None, exception=ValueError("bad")) == "permanent"
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +146,7 @@ def test_agency_assign_returns_error_when_no_project(monkeypatch):
         result_str = _tool_agency_assign("http://localhost:8000", "tok", None, [{"name": "t1"}])
     result = json.loads(result_str)
     assert result["status"] == "error"
+    assert result["error_type"] == "validation"
     assert result["code"] is None
     assert "project" in result["message"].lower()
     assert result["cause"] is not None
@@ -138,14 +161,16 @@ def test_assign_response_has_next_step():
         "assignments": {"t1": {"agency_task_id": "uuid-1", "agent_hash": "hash-1"}},
         "agents": {"hash-1": {"rendered_prompt": "do stuff", "content_hash": "c1", "template_id": "t1", "primitive_ids": {}}},
     }
-    with patch("agency.cli.mcp._call_with_retry") as mock_retry, \
+    with patch("agency.client._call_with_retry") as mock_retry, \
          patch("agency.cli.mcp._resolve_project_id", return_value="proj-1"):
         mock_retry.return_value = mock_resp
         result = json.loads(_tool_agency_assign("http://localhost:8000", "tok", "proj-1", [{"external_id": "t1", "description": "test"}]))
 
+    assert result["status"] == "ok"
     assert "next_step" in result
     assert len(result["next_step"]) > 0
     assert "agency_task_id_note" in result["assignments"]["t1"]
+    assert "task_ids" in result
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +187,11 @@ def test_evaluator_response_has_next_step_and_task_id():
         "callback_jwt": "jwt-here",
         "evaluator_agent_id": "eval-1",
     }
-    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+    with patch("agency.client._call_with_retry") as mock_retry:
         mock_retry.return_value = mock_resp
         result = json.loads(_tool_agency_evaluator("http://localhost:8000", "tok", "task-123"))
 
+    assert result["status"] == "ok"
     assert result["evaluator_prompt"] == "evaluate this"
     assert result["callback_jwt"] == "jwt-here"
     assert result["agency_task_id"] == "task-123"
@@ -187,14 +213,14 @@ def test_submit_evaluation_passes_bytes_to_httpx():
     expected_hash = hashlib.sha256(hash_body).hexdigest()
     mock_resp.json.return_value = {"content_hash": expected_hash}
 
-    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+    with patch("agency.client._call_with_retry") as mock_retry:
         mock_retry.return_value = mock_resp
         result_str = _tool_agency_submit_evaluation(
             "http://localhost:8000", "tok", "task-123", "jwt-token", "looks good"
         )
 
     result = json.loads(result_str)
-    assert result["status"] == "accepted"
+    assert result["status"] == "ok"
     assert result["content_hash"] == expected_hash
     assert "next_step" in result
 
@@ -203,16 +229,16 @@ def test_submit_evaluation_accepts_new_params():
     """v1.2.1: agency_submit_evaluation accepts score, task_completed, score_type."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"status": "accepted", "content_hash": "abc123"}
+    mock_resp.json.return_value = {"status": "ok", "content_hash": "abc123"}
 
-    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+    with patch("agency.client._call_with_retry") as mock_retry:
         mock_retry.return_value = mock_resp
         result = json.loads(_tool_agency_submit_evaluation(
             "http://localhost:8000", "tok", "task-123", "jwt-tok", "looks good",
             score=85, task_completed=True, score_type="rubric",
         ))
 
-    assert result["status"] == "accepted"
+    assert result["status"] == "ok"
     assert "next_step" in result
 
 
@@ -220,7 +246,7 @@ def test_submit_evaluation_returns_null_code_on_connect_error():
     """ConnectError → code=None in error envelope."""
     import httpx as real_httpx
 
-    with patch("agency.cli.mcp._call_with_retry") as mock_retry:
+    with patch("agency.client._call_with_retry") as mock_retry:
         mock_retry.side_effect = real_httpx.ConnectError("Connection refused")
         result_str = _tool_agency_submit_evaluation(
             "http://localhost:8000", "tok", "task-123", "jwt-token", "output"
@@ -228,22 +254,90 @@ def test_submit_evaluation_returns_null_code_on_connect_error():
 
     result = json.loads(result_str)
     assert result["status"] == "error"
+    assert result["error_type"] == "transient"
     assert result["code"] is None
 
 
 def test_call_with_retry_retries_once():
     """Connection errors get one retry after delay."""
-    from agency.cli.mcp import _call_with_retry
+    from agency.client import _call_with_retry
     import httpx as real_httpx
 
     mock_fn = MagicMock()
     mock_fn.side_effect = [real_httpx.ConnectError("refused"), MagicMock(status_code=200)]
 
-    with patch("agency.cli.mcp.time") as mock_time:
+    with patch("agency.client.time") as mock_time:
         result = _call_with_retry(mock_fn, "http://localhost:8000")
 
     assert mock_fn.call_count == 2
     mock_time.sleep.assert_called_once_with(2)
+
+
+# ---------------------------------------------------------------------------
+# _tool_agency_get_task
+# ---------------------------------------------------------------------------
+
+
+def test_get_task_returns_state_and_next_step():
+    """agency_get_task returns task state with context-sensitive next_step."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "agency_task_id": "task-123",
+        "external_id": "t1",
+        "project_id": "proj-1",
+        "state": "assigned",
+        "agent_hash": "abc123",
+        "rendered_prompt": "do stuff",
+        "rendering_warnings": [],
+        "created_at": "2026-03-18T00:00:00Z",
+        "evaluation": None,
+    }
+    with patch("agency.client._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_get_task("http://localhost:8000", "tok", "task-123"))
+
+    assert result["status"] == "ok"
+    assert result["state"] == "assigned"
+    assert "next_step" in result
+    assert "evaluated" in result["next_step"].lower()
+
+
+def test_get_task_evaluation_pending_next_step():
+    """agency_get_task with evaluation_pending state has correct next_step."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "agency_task_id": "task-123",
+        "external_id": "t1",
+        "project_id": "proj-1",
+        "state": "evaluation_pending",
+        "agent_hash": "abc123",
+        "rendered_prompt": "do stuff",
+        "rendering_warnings": [],
+        "created_at": "2026-03-18T00:00:00Z",
+        "evaluation": {"evaluation_status": "pending", "output": "good"},
+    }
+    with patch("agency.client._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_get_task("http://localhost:8000", "tok", "task-123"))
+
+    assert result["status"] == "ok"
+    assert "pending" in result["next_step"].lower()
+
+
+def test_get_task_404_returns_error():
+    """agency_get_task returns structured error on 404."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+    mock_resp.text = "Not found"
+    with patch("agency.client._call_with_retry") as mock_retry:
+        mock_retry.return_value = mock_resp
+        result = json.loads(_tool_agency_get_task("http://localhost:8000", "tok", "bad-id"))
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "not_found"
+    assert result["code"] == 404
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +395,7 @@ def test_list_projects_tool_connection_error():
         result = json.loads(_tool_agency_list_projects("http://localhost:8000", "tok"))
 
     assert result["status"] == "error"
+    assert result["error_type"] == "transient"
     assert result["code"] is None
 
 
@@ -338,6 +433,7 @@ def test_create_project_tool_empty_name_error():
         "http://localhost:8000", "tok", ""))
 
     assert result["status"] == "error"
+    assert result["error_type"] == "validation"
     assert result["code"] == 400
     assert "name" in result["message"].lower()
 
@@ -359,6 +455,7 @@ def test_create_project_tool_duplicate_name():
             "http://localhost:8000", "tok", "Existing"))
 
     assert result["status"] == "error"
+    assert result["error_type"] == "validation"
     assert result["code"] == 409
     assert "Existing" in result["message"]
 
@@ -398,6 +495,7 @@ def test_create_project_tool_connection_error():
             "http://localhost:8000", "tok", "Test"))
 
     assert result["status"] == "error"
+    assert result["error_type"] == "transient"
     assert result["code"] is None
 
 
@@ -484,4 +582,5 @@ def test_status_tool_connection_error():
         result = json.loads(_tool_agency_status("http://localhost:8000", "tok"))
 
     assert result["status"] == "error"
+    assert result["error_type"] == "transient"
     assert result["code"] is None

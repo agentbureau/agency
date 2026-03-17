@@ -4,6 +4,7 @@ Exposes tools for the assign → execute → evaluate loop:
   - agency_assign: compose agents for tasks, return prompts
   - agency_evaluator: get evaluator prompt + callback JWT
   - agency_submit_evaluation: submit evaluation with structured metadata
+  - agency_get_task: retrieve task state and agent composition
 
 Discovery and status tools:
   - agency_list_projects: list all projects with default identification
@@ -11,23 +12,34 @@ Discovery and status tools:
   - agency_status: instance status, task progress, primitive health
 """
 import asyncio
-import hashlib
 import json
 import os
 import pathlib
 import sys
-import time
 from typing import Optional
 
 import click
 import httpx
+
+from agency.client import (
+    _call_with_retry,
+    _classify_error,
+    _make_error,
+    resolve_base_url,
+    resolve_token,
+    assign as client_assign,
+    get_evaluator as client_get_evaluator,
+    submit_evaluation as client_submit_evaluation,
+    get_task as client_get_task,
+    API_VERSION_HEADER,
+    API_VERSION,
+)
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MCP_RETRY_DELAY = 2  # seconds
 MCP_SERVER_NAME = "agency"
 PER_REPO_CONFIG_FILE = ".agency-project"
 AGENCY_TASK_ID_NOTE = (
@@ -51,6 +63,19 @@ NEXT_STEP_SUBMIT = (
     "Evaluation recorded. The content_hash confirms what Agency received. "
     "The assign-execute-evaluate loop for this task is complete."
 )
+NEXT_STEP_GET_TASK = {
+    "assigned": (
+        "This task has an agent composition but has not been evaluated yet. "
+        "Execute it using the rendered_prompt, then call agency_evaluator."
+    ),
+    "evaluation_pending": (
+        "Evaluation has been submitted and is pending confirmation. "
+        "No further action needed."
+    ),
+    "evaluation_received": (
+        "This task has been evaluated. No further action needed."
+    ),
+}
 NEXT_STEP_LIST_PROJECTS = (
     "Pass a project_id to agency_assign, or omit it to use the default project."
 )
@@ -126,32 +151,12 @@ def _resolve_project_id(project_id: Optional[str]) -> Optional[str]:
 
 
 def _read_mcp_token() -> str:
-    """Read bearer token from AGENCY_TOKEN_FILE (default: ~/.agency-mcp-token).
-    Exits with code 1 if the file is missing or empty."""
-    token_file = os.environ.get(
-        "AGENCY_TOKEN_FILE", os.path.expanduser("~/.agency-mcp-token")
-    )
+    """Read bearer token for MCP client. Exits with code 1 if missing."""
     try:
-        with open(token_file) as f:
-            token = f.read().strip()
-    except FileNotFoundError:
-        token = ""
-    if not token:
-        print(
-            f"Error: token file not found at {token_file}. "
-            f"Run 'agency token create --client-id mcp > {token_file}' first.",
-            file=sys.stderr,
-        )
+        return resolve_token("mcp")
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    return token
-
-
-def _get_agency_url() -> str:
-    """Derive Agency server URL from agency.toml [server] host/port."""
-    cfg = _read_toml_config()
-    host = cfg.get("server", {}).get("host", "127.0.0.1")
-    port = cfg.get("server", {}).get("port", 8000)
-    return f"http://{host}:{port}"
 
 
 def _check_health(base_url: str) -> bool:
@@ -163,218 +168,15 @@ def _check_health(base_url: str) -> bool:
         return False
 
 
-def _make_error(code: Optional[int], message: str, cause: Optional[str] = None, fix: Optional[str] = None) -> dict:
-    return {"status": "error", "code": code, "message": message, "cause": cause, "fix": fix}
-
-
-def _call_with_retry(fn, *args, **kwargs):
-    """Call fn, retry once after MCP_RETRY_DELAY on connection error."""
-    try:
-        return fn(*args, **kwargs)
-    except httpx.ConnectError:
-        time.sleep(MCP_RETRY_DELAY)
-        return fn(*args, **kwargs)
-
-
 def _connection_error(base_url: str) -> str:
     cfg_file = _get_config_file_path()
     return json.dumps(_make_error(
-        None,
-        f"Cannot reach Agency server at {base_url}.",
+        error_type="transient",
+        code=None,
+        message=f"Cannot reach Agency server at {base_url}.",
         cause="The server is not running, or is running on a different host/port.",
         fix=f"Start the server: agency serve. Verify: curl {base_url}/health. Config: {cfg_file}",
     ))
-
-
-def _make_success(**kwargs) -> dict:
-    return {"status": "ok", **kwargs}
-
-
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
-
-
-def _tool_agency_assign(
-    base_url: str, token: str, project_id: Optional[str], tasks: list
-) -> str:
-    """POST /projects/{id}/assign — compose agents for tasks."""
-    resolved = _resolve_project_id(project_id)
-    if resolved is None:
-        return json.dumps(_make_error(
-            None,
-            "No project ID provided.",
-            cause=(
-                "No project_id argument, no .agency-project file, "
-                "no AGENCY_PROJECT_ID env var, and no default_id in agency.toml."
-            ),
-            fix=(
-                "Pass project_id, create .agency-project in your repo root, "
-                "set AGENCY_PROJECT_ID, or configure [project] default_id in agency.toml."
-            ),
-        ))
-    if not tasks:
-        return json.dumps(_make_error(
-            400,
-            "The tasks array is empty.",
-            cause="No task objects provided in the tasks parameter.",
-            fix="Provide at least one task with external_id and description.",
-        ))
-    try:
-        resp = _call_with_retry(
-            httpx.post,
-            f"{base_url}/projects/{resolved}/assign",
-            json={"tasks": tasks},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            for _ext_id, assignment in data.get("assignments", {}).items():
-                assignment["agency_task_id_note"] = AGENCY_TASK_ID_NOTE
-            data["next_step"] = NEXT_STEP_ASSIGN
-            return json.dumps(data)
-        if resp.status_code == 503:
-            return json.dumps(_make_error(
-                503,
-                "Agency has no primitives loaded.",
-                cause="The primitive store is empty — agent composition requires at least one primitive.",
-                fix="Run: agency primitives update",
-            ))
-        if resp.status_code == 404:
-            return json.dumps(_make_error(
-                404,
-                f"Project ID not found: {resolved}.",
-                cause="No project with this ID exists in the database.",
-                fix="List available projects with agency_list_projects or check agency.toml [project] default_id.",
-            ))
-        return json.dumps(_make_error(resp.status_code, resp.text))
-    except httpx.ConnectError:
-        return _connection_error(base_url)
-    except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
-
-
-def _tool_agency_evaluator(
-    base_url: str, token: str, agency_task_id: str
-) -> str:
-    """GET /tasks/{id}/evaluator — get evaluator prompt and callback JWT."""
-    try:
-        resp = _call_with_retry(
-            httpx.get,
-            f"{base_url}/tasks/{agency_task_id}/evaluator",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return json.dumps({
-                "evaluator_prompt": data["rendered_prompt"],
-                "callback_jwt": data["callback_jwt"],
-                "agency_task_id": agency_task_id,
-                "next_step": NEXT_STEP_EVALUATOR,
-            })
-        if resp.status_code == 404:
-            return json.dumps(_make_error(
-                404,
-                f"Task not found for agency_task_id: {agency_task_id}.",
-                cause=(
-                    "The ID does not match any task. Most common mistake: "
-                    "passing your external_id instead of the agency_task_id "
-                    "returned by agency_assign."
-                ),
-                fix="Check the agency_assign response — use the agency_task_id field, not external_id.",
-            ))
-        if resp.status_code == 422:
-            return json.dumps(_make_error(
-                422,
-                f"No evaluator assigned for task {agency_task_id}.",
-                cause="The agent composition for this task did not include an evaluator component.",
-                fix=(
-                    "This task cannot be evaluated through Agency. "
-                    "Proceed without evaluation, or re-assign with a different task description."
-                ),
-            ))
-        return json.dumps(_make_error(resp.status_code, resp.text))
-    except httpx.ConnectError:
-        return _connection_error(base_url)
-    except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
-
-
-def _tool_agency_submit_evaluation(
-    base_url: str,
-    token: str,
-    agency_task_id: str,
-    callback_jwt: str,
-    output: str,
-    score: Optional[int] = None,
-    task_completed: Optional[bool] = None,
-    score_type: Optional[str] = None,
-) -> str:
-    """POST /tasks/{id}/evaluation — submit evaluation with dual JWT auth."""
-    # Hash body WITHOUT callback_jwt (server hashes without it)
-    hash_body: dict = {"output": output}
-    if score is not None:
-        hash_body["score"] = score
-    if task_completed is not None:
-        hash_body["task_completed"] = task_completed
-    if score_type is not None:
-        hash_body["score_type"] = score_type
-    hash_bytes = json.dumps(hash_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    local_hash = hashlib.sha256(hash_bytes).hexdigest()
-
-    # Send body WITH callback_jwt for server-side extraction
-    send_body = {**hash_body, "callback_jwt": callback_jwt}
-    body_bytes = json.dumps(send_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-    try:
-        resp = _call_with_retry(
-            httpx.post,
-            f"{base_url}/tasks/{agency_task_id}/evaluation",
-            content=body_bytes,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            server_data = resp.json()
-            return json.dumps({
-                "status": "accepted",
-                "content_hash": server_data.get("content_hash", local_hash),
-                "next_step": NEXT_STEP_SUBMIT,
-            })
-        if resp.status_code == 404:
-            return json.dumps(_make_error(
-                404,
-                f"Task not found for agency_task_id: {agency_task_id}.",
-                cause="The ID does not match any task. Most common mistake: passing external_id instead of agency_task_id.",
-                fix="Check the agency_assign response — use the agency_task_id field.",
-            ))
-        if resp.status_code == 401:
-            return json.dumps(_make_error(
-                401,
-                "Callback JWT is invalid, expired, or already used.",
-                cause=(
-                    "Each callback_jwt from agency_evaluator is single-use. "
-                    "This JWT may have expired (24h TTL) or been consumed by a prior submission."
-                ),
-                fix="Call agency_evaluator with agency_task_id to get a new callback_jwt, then call agency_submit_evaluation again.",
-            ))
-        if resp.status_code == 422:
-            try:
-                detail = resp.json().get("detail", {})
-                msg = detail.get("message", resp.text) if isinstance(detail, dict) else resp.text
-            except Exception:
-                msg = resp.text
-            return json.dumps(_make_error(422, msg))
-        return json.dumps(_make_error(resp.status_code, resp.text))
-    except httpx.ConnectError:
-        return _connection_error(base_url)
-    except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
 
 
 def _detect_default_source() -> str:
@@ -396,13 +198,136 @@ def _detect_default_source() -> str:
     return "none"
 
 
+def _write_toml_default_id(project_id: str) -> None:
+    """Update agency.toml [project] default_id."""
+    import tomllib
+    import tomli_w
+
+    config_path = _get_config_file_path()
+    try:
+        with open(config_path, "rb") as f:
+            cfg = tomllib.load(f)
+    except Exception:
+        cfg = {}
+
+    if "project" not in cfg:
+        cfg["project"] = {}
+    cfg["project"]["default_id"] = project_id
+
+    with open(config_path, "wb") as f:
+        tomli_w.dump(cfg, f)
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations — task loop (delegate to client.py)
+# ---------------------------------------------------------------------------
+
+
+def _tool_agency_assign(
+    base_url: str, token: str, project_id: Optional[str], tasks: list
+) -> str:
+    """POST /projects/{id}/assign — compose agents for tasks."""
+    resolved = _resolve_project_id(project_id)
+    if resolved is None:
+        return json.dumps(_make_error(
+            error_type="validation",
+            code=None,
+            message="No project ID provided.",
+            cause=(
+                "No project_id argument, no .agency-project file, "
+                "no AGENCY_PROJECT_ID env var, and no default_id in agency.toml."
+            ),
+            fix=(
+                "Pass project_id, create .agency-project in your repo root, "
+                "set AGENCY_PROJECT_ID, or configure [project] default_id in agency.toml."
+            ),
+        ))
+    if not tasks:
+        return json.dumps(_make_error(
+            error_type="validation",
+            code=400,
+            message="The tasks array is empty.",
+            cause="No task objects provided in the tasks parameter.",
+            fix="Provide at least one task with external_id and description.",
+        ))
+
+    result = client_assign(base_url, token, resolved, tasks)
+
+    if result.get("status") == "ok":
+        # Add MCP-specific annotations
+        for _ext_id, assignment in result.get("assignments", {}).items():
+            assignment["agency_task_id_note"] = AGENCY_TASK_ID_NOTE
+        result["next_step"] = NEXT_STEP_ASSIGN
+
+    return json.dumps(result)
+
+
+def _tool_agency_evaluator(
+    base_url: str, token: str, agency_task_id: str
+) -> str:
+    """GET /tasks/{id}/evaluator — get evaluator prompt and callback JWT."""
+    result = client_get_evaluator(base_url, token, agency_task_id)
+
+    if result.get("status") == "ok":
+        result["next_step"] = NEXT_STEP_EVALUATOR
+
+    return json.dumps(result)
+
+
+def _tool_agency_submit_evaluation(
+    base_url: str,
+    token: str,
+    agency_task_id: str,
+    callback_jwt: str,
+    output: str,
+    score: Optional[int] = None,
+    task_completed: Optional[bool] = None,
+    score_type: Optional[str] = None,
+) -> str:
+    """POST /tasks/{id}/evaluation — submit evaluation with dual JWT auth."""
+    result = client_submit_evaluation(
+        base_url, token, agency_task_id, callback_jwt, output,
+        score=score, task_completed=task_completed, score_type=score_type,
+    )
+
+    if result.get("status") == "ok":
+        result["next_step"] = NEXT_STEP_SUBMIT
+
+    return json.dumps(result)
+
+
+def _tool_agency_get_task(
+    base_url: str, token: str, agency_task_id: str
+) -> str:
+    """GET /tasks/{id} — retrieve task state and agent composition."""
+    result = client_get_task(base_url, token, agency_task_id)
+
+    if result.get("status") == "ok":
+        state = result.get("state", "assigned")
+        result["next_step"] = NEXT_STEP_GET_TASK.get(
+            state,
+            "Task state unknown. Check the state field for details.",
+        )
+
+    return json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations — project and status (stay in MCP layer)
+# ---------------------------------------------------------------------------
+
+
 def _tool_agency_list_projects(base_url: str, token: str) -> str:
     """GET /projects — list all projects with default identification."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        API_VERSION_HEADER: API_VERSION,
+    }
     try:
         resp = _call_with_retry(
             httpx.get,
             f"{base_url}/projects",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=30,
         )
         if resp.status_code == 200:
@@ -434,36 +359,25 @@ def _tool_agency_list_projects(base_url: str, token: str) -> str:
             })
         if resp.status_code == 401:
             return json.dumps(_make_error(
-                401,
-                "Authentication failed.",
+                error_type=_classify_error(401),
+                code=401,
+                message="Authentication failed.",
                 cause="Invalid or revoked token.",
                 fix=f"Regenerate: agency token create --client-id mcp > {os.path.expanduser('~/.agency-mcp-token')}",
             ))
-        return json.dumps(_make_error(resp.status_code, resp.text))
+        return json.dumps(_make_error(
+            error_type=_classify_error(resp.status_code),
+            code=resp.status_code,
+            message=resp.text,
+        ))
     except httpx.ConnectError:
         return _connection_error(base_url)
     except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
-
-
-def _write_toml_default_id(project_id: str) -> None:
-    """Update agency.toml [project] default_id."""
-    import tomllib
-    import tomli_w
-
-    config_path = _get_config_file_path()
-    try:
-        with open(config_path, "rb") as f:
-            cfg = tomllib.load(f)
-    except Exception:
-        cfg = {}
-
-    if "project" not in cfg:
-        cfg["project"] = {}
-    cfg["project"]["default_id"] = project_id
-
-    with open(config_path, "wb") as f:
-        tomli_w.dump(cfg, f)
+        return json.dumps(_make_error(
+            error_type=_classify_error(None, exception=e),
+            code=None,
+            message=str(e),
+        ))
 
 
 def _tool_agency_create_project(
@@ -480,8 +394,9 @@ def _tool_agency_create_project(
     """POST /projects — create a new project."""
     if not name or not name.strip():
         return json.dumps(_make_error(
-            400,
-            "Project name is required.",
+            error_type="validation",
+            code=400,
+            message="Project name is required.",
             cause="The name parameter is missing or empty.",
             fix="Pass a non-empty name string to agency_create_project.",
         ))
@@ -498,21 +413,25 @@ def _tool_agency_create_project(
     if attribution is not None:
         body["attribution"] = attribution
 
+    headers = {
+        "Authorization": f"Bearer {token}",
+        API_VERSION_HEADER: API_VERSION,
+    }
     try:
         resp = _call_with_retry(
             httpx.post,
             f"{base_url}/projects",
             json=body,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=30,
         )
         if resp.status_code in (200, 201):
             data = resp.json()
-            project_id = data.get("id")
+            project_id_val = data.get("id")
 
-            if set_as_default and project_id:
+            if set_as_default and project_id_val:
                 try:
-                    _write_toml_default_id(project_id)
+                    _write_toml_default_id(project_id_val)
                 except Exception:
                     pass  # Non-fatal; project was still created
 
@@ -526,7 +445,7 @@ def _tool_agency_create_project(
                     settings_applied[field] = {"value": val, "source": source}
 
             return json.dumps({
-                "project_id": project_id,
+                "project_id": project_id_val,
                 "name": data.get("name"),
                 "is_default": set_as_default,
                 "settings_applied": settings_applied,
@@ -541,8 +460,9 @@ def _tool_agency_create_project(
                 existing_id = ""
                 proj_name = name.strip()
             return json.dumps(_make_error(
-                409,
-                f'A project named "{proj_name}" already exists (id: {existing_id}).',
+                error_type=_classify_error(409),
+                code=409,
+                message=f'A project named "{proj_name}" already exists (id: {existing_id}).',
                 cause="Project names must be unique (case-insensitive).",
                 fix="Use a different name, or pass the existing project's id to agency_assign.",
             ))
@@ -552,12 +472,24 @@ def _tool_agency_create_project(
                 msg = detail.get("message", resp.text) if isinstance(detail, dict) else resp.text
             except Exception:
                 msg = resp.text
-            return json.dumps(_make_error(400, msg))
-        return json.dumps(_make_error(resp.status_code, resp.text))
+            return json.dumps(_make_error(
+                error_type=_classify_error(400),
+                code=400,
+                message=msg,
+            ))
+        return json.dumps(_make_error(
+            error_type=_classify_error(resp.status_code),
+            code=resp.status_code,
+            message=resp.text,
+        ))
     except httpx.ConnectError:
         return _connection_error(base_url)
     except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
+        return json.dumps(_make_error(
+            error_type=_classify_error(None, exception=e),
+            code=None,
+            message=str(e),
+        ))
 
 
 def _tool_agency_status(
@@ -567,11 +499,15 @@ def _tool_agency_status(
     url = f"{base_url}/status"
     if project_id:
         url = f"{url}?project_id={project_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        API_VERSION_HEADER: API_VERSION,
+    }
     try:
         resp = _call_with_retry(
             httpx.get,
             url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=30,
         )
         if resp.status_code == 200:
@@ -590,11 +526,19 @@ def _tool_agency_status(
 
             data["next_step"] = next_step
             return json.dumps(data)
-        return json.dumps(_make_error(resp.status_code, resp.text))
+        return json.dumps(_make_error(
+            error_type=_classify_error(resp.status_code),
+            code=resp.status_code,
+            message=resp.text,
+        ))
     except httpx.ConnectError:
         return _connection_error(base_url)
     except httpx.HTTPError as e:
-        return json.dumps(_make_error(None, str(e)))
+        return json.dumps(_make_error(
+            error_type=_classify_error(None, exception=e),
+            code=None,
+            message=str(e),
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +551,7 @@ async def _run_mcp_server():
     from mcp.server.stdio import stdio_server
     from mcp import types
 
-    base_url = _get_agency_url()
+    base_url = resolve_base_url()
     token = _read_mcp_token()
 
     if not _check_health(base_url):
@@ -617,7 +561,7 @@ async def _run_mcp_server():
         )
         # Continue startup — server may come up later
 
-    print(f"Agency MCP server started \u2014 connecting to API at {base_url}", file=sys.stderr)
+    print(f"Agency MCP server started — connecting to API at {base_url}", file=sys.stderr)
 
     server = Server(MCP_SERVER_NAME)
 
@@ -751,6 +695,27 @@ async def _run_mcp_server():
                 },
             ),
             types.Tool(
+                name="agency_get_task",
+                description=(
+                    "Get the current state of a task: assignment status, agent "
+                    "composition, rendered prompt, and evaluation status. Use this "
+                    "to check on a task or resume after an interrupted "
+                    "assign-evaluate-submit loop. See caller protocol: "
+                    "https://github.com/agentbureau/agency/blob/main/docs/"
+                    "integrations/caller-protocol.md"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agency_task_id": {
+                            "type": "string",
+                            "description": "The Agency task ID from the assign response.",
+                        },
+                    },
+                    "required": ["agency_task_id"],
+                },
+            ),
+            types.Tool(
                 name="agency_list_projects",
                 description=(
                     "List all projects in this Agency instance. Returns project IDs, "
@@ -856,6 +821,10 @@ async def _run_mcp_server():
                 task_completed=arguments.get("task_completed"),
                 score_type=arguments.get("score_type"),
             )
+        elif name == "agency_get_task":
+            result = _tool_agency_get_task(
+                base_url, token, arguments["agency_task_id"]
+            )
         elif name == "agency_list_projects":
             result = _tool_agency_list_projects(base_url, token)
         elif name == "agency_create_project":
@@ -875,7 +844,11 @@ async def _run_mcp_server():
                 base_url, token, project_id=arguments.get("project_id")
             )
         else:
-            result = json.dumps(_make_error(None, f"Unknown tool: {name}"))
+            result = json.dumps(_make_error(
+                error_type="permanent",
+                code=None,
+                message=f"Unknown tool: {name}",
+            ))
 
         return [types.TextContent(type="text", text=result)]
 
