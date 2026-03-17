@@ -689,6 +689,7 @@ def _step_create_integration_tokens(
     """
     integrations = [
         ("MCP (Claude Code)", "mcp", os.path.expanduser("~/.agency-mcp-token")),
+        ("CLI", "cli", os.path.expanduser("~/.agency-cli-token")),
         ("Superpowers", "superpowers", os.path.expanduser("~/.agency-superpowers-token")),
         ("Workgraph", "workgraph", os.path.expanduser("~/.agency-workgraph-token")),
     ]
