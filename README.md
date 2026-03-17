@@ -43,27 +43,35 @@ agency serve
 
 # Verify
 curl http://127.0.0.1:8000/health
+# Returns: {"status": "ok", "version": "<your installed version>"}
 ```
 
-## Usage with Claude Code
+## Integration guides
 
-Agency registers as an MCP server during `agency init`. Once running, Claude Code can:
+Agency works with different task execution systems. Choose the guide that matches your setup:
 
-1. **`agency_assign`** — compose agents for tasks, receive rendered prompts
-2. **`agency_evaluator`** — get evaluation criteria and callback JWT for completed tasks
-3. **`agency_submit_evaluation`** — submit structured evaluation results
-4. **`agency_list_projects`** — discover available projects
-5. **`agency_create_project`** — create new projects
-6. **`agency_status`** — check instance health, task progress, primitive counts
+| You are using | Guide |
+|---|---|
+| **Claude Code** (MCP tools directly) | [Using Agency as an MCP with Claude Code](docs/integrations/using%20agency%20as%20an%20MCP%20with%20claude%20code.md) |
+| **Superpowers** (brainstorming, plans, subagent dispatch) | [Using Agency with Superpowers](docs/integrations/using%20agency%20with%20superpowers.md) |
+| **Workgraph** (shell-based batch task execution) | [Using Agency with Workgraph](docs/integrations/using%20agency%20with%20workgraph.md) |
 
-The full caller protocol is documented at [docs/integrations/caller-protocol.md](docs/integrations/caller-protocol.md).
+The Claude Code guide is the primary reference — it covers all 6 MCP tools, setup, response formats, and troubleshooting. The Superpowers guide explains how Agency fits into Superpowers workflows. The Workgraph guide covers the standalone shell-based integration.
 
-## Verify your server is running
+## MCP tools
 
-```bash
-curl http://127.0.0.1:8000/health
-# Returns: {"status": "ok", "version": "1.2.1"}
-```
+Agency exposes six tools via the Model Context Protocol:
+
+| Tool | Purpose |
+|---|---|
+| `agency_assign` | Compose agents for tasks, receive rendered prompts |
+| `agency_evaluator` | Get evaluation criteria and callback JWT for completed tasks |
+| `agency_submit_evaluation` | Submit structured evaluation results |
+| `agency_list_projects` | Discover available projects |
+| `agency_create_project` | Create new projects |
+| `agency_status` | Check instance health, task progress, primitive counts |
+
+The full caller protocol (assign → execute → evaluate) is documented in the [Claude Code integration guide](docs/integrations/using%20agency%20as%20an%20MCP%20with%20claude%20code.md#caller-protocol).
 
 ## Licence
 

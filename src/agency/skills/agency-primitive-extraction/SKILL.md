@@ -39,6 +39,8 @@ Apply before accepting any candidate.
 
 **Step 5 — Normalise.** Strip narrative scaffolding. "In order to ensure that the output is appropriate" → "Calibrate output for the intended audience."
 
+**Step 6 — Task-type coverage check.** For each desired outcome extracted, identify the task type it serves (build, evaluate, review, research, analyse, debug, plan, synthesise). Check whether the batch covers at least build + evaluate + review for each domain represented. If a domain has outcomes for only one task type, write the missing outcomes before finalising. See "Task-type coverage audit" below.
+
 ## Writing conventions by type
 
 **Role components — instructional verb phrases:**
@@ -75,6 +77,31 @@ Structure: *when [condition], do [action], not [alternative].* Include explicit 
 **Evaluable** — after a task runs, "did the agent do this?" has a yes/no answer.
 
 **Brief** — role components: 50–150 chars. Over 150 almost always means two capabilities bundled.
+
+## Task-type coverage audit
+
+Desired outcomes describe what the output looks like. The semantic search selects them by matching against the task description. If the pool has desired outcomes only for **building** software but not for **evaluating** or **reviewing** software, a review task in the software domain will be assigned a build-deliverable outcome — the domain matches but the task type is wrong.
+
+**The problem:** domain match ≠ task-type match. A desired outcome for "return an implementation plan with file paths and code" is correct for a build task but wrong for an evaluation task, even though both are in the software domain. The semantic search cannot distinguish task type from domain because both contribute to the embedding.
+
+**Task-type taxonomy:** `build` · `evaluate` · `review` · `research` · `analyse` · `debug` · `plan` · `synthesise`
+
+**Coverage audit (run after any batch extraction or starter CSV update):**
+
+For each domain in the taxonomy that has desired outcome primitives, check whether outcomes exist for at least these task types: build, evaluate, review. These three are the minimum because they represent the most common divergence — a build outcome specifies a deliverable structure, an evaluation outcome specifies an issue-list structure, a review outcome specifies an assessment structure. If any domain has outcomes for only one task type, flag the gap.
+
+**How to write task-type-aware desired outcomes:**
+
+The task type should be implicit in the output schema, not stated as a qualifier. The structural test ("The output must include ___") still applies — the difference is what the blanks contain.
+
+```
+Build:     Return an implementation plan with: goal, architecture, numbered tasks with file paths
+Evaluate:  Return a severity-ranked issue list with: problem, severity, proposed fix per issue
+Review:    Return an assessment with: compliance status per requirement, gaps found, recommendations
+Research:  Return a findings summary with: sources consulted, key findings, confidence levels
+```
+
+Each describes a different output structure for the same domain. The semantic search matches the right one because the task description for an evaluation contains words like "assess," "flag issues," "feasibility" that align with the evaluation outcome's embedding, not the build outcome's embedding — but only if the evaluation outcome exists in the pool.
 
 ## Domain specificity scoring (0–100)
 
@@ -140,6 +167,7 @@ Full mirroring rules: see `agency-project-conventions.md` § Starter CSV mirrori
 | "When A happens, be careful" | Trade-off without a decision rule — name what wins |
 | Role component > 150 chars | Almost always needs splitting |
 | Extracting procedural steps as role components | Steps belong in the skill; the capability belongs in the primitive |
+| Domain has desired outcomes for only one task type | Semantic search matches domain, not task type — an evaluation task in the software domain gets assigned a build-deliverable outcome because no evaluation outcome exists. Run the coverage audit after every batch extraction. |
 
 ## Reference
 

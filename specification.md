@@ -706,8 +706,8 @@ Parallel evaluations: N variant agents, identical except for one mutated primiti
 ## Required setup sequence
 
 ```bash
-# Step 1 — Install
-pip install agency-engine
+# Step 1 — Install (pipx recommended — keeps agency on PATH across sessions)
+pipx install agency-engine
 
 # Step 2 — Full setup wizard
 agency init

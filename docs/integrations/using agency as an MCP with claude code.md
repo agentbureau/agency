@@ -1,4 +1,4 @@
-# Agency + Claude Code / Superpowers Integration
+# Agency + Claude Code MCP Integration
 
 Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the six tools, response formats, and the caller protocol.
 
