@@ -9,6 +9,7 @@ from agency.cli.mcp import mcp_command
 from agency.cli.project import project_create_command, project_list_command, project_pin_command
 from agency.cli.setup import client_setup_command
 from agency.cli.skills import skills_install_command
+from agency.cli.task import task_assign_command, task_evaluator_command, task_submit_command, task_get_command
 
 
 @click.group()
@@ -41,3 +42,11 @@ main.add_command(client_group)
 skills_group = click.Group("skills")
 skills_group.add_command(skills_install_command, name="install")
 main.add_command(skills_group)
+
+# agency task {assign,evaluator,submit,get}
+task_group = click.Group("task")
+task_group.add_command(task_assign_command, name="assign")
+task_group.add_command(task_evaluator_command, name="evaluator")
+task_group.add_command(task_submit_command, name="submit")
+task_group.add_command(task_get_command, name="get")
+main.add_command(task_group)
