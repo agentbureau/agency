@@ -1,293 +1,85 @@
-# Agency + Claude Code / Superpowers Integration
+# Agency + Superpowers Integration
 
-Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the six tools, response formats, and the caller protocol.
+How Superpowers skills (brainstorming, writing-plans, subagent-driven-development, executing-plans) work with Agency to compose, dispatch, and evaluate agents.
 
-## Prerequisites
+For general Claude Code MCP setup and tool reference, see [claude-code.md](claude-code.md).
 
-- Agency v1.2.1 or later installed (`pipx install agency-engine`)
-- `agency init` completed (Phase 1 and Phase 2)
-- `agency serve` running
-- A valid MCP token at `~/.agency-mcp-token`
+## How Agency fits into the Superpowers workflow
 
-If you ran `agency init` through both phases, all of these are already in place.
+Superpowers provides the orchestration layer — brainstorming, planning, task decomposition, subagent dispatch, and review. Agency provides the agent composition layer — selecting primitives, composing agents, and recording evaluations. They are complementary:
 
-## Setup
+| Superpowers handles | Agency handles |
+|---|---|
+| What tasks to do (brainstorming, planning) | What agent to assign to each task |
+| How to break work into subtasks | What role components, outcomes, and trade-offs to use |
+| Dispatching subagents and reviewing output | Evaluating agent performance and recording results |
+| Session orchestration and plan tracking | Inter-deployment memory and primitive evolution |
 
-### Automatic (recommended)
+## Typical workflow
 
-During `agency init` Phase 1 Step 1.6, the wizard registers Agency as an MCP server in `~/.claude.json` using the absolute path to the `agency` binary. If you accepted, setup is complete.
+### 1. Brainstorming → task decomposition
 
-### Manual
+Use `superpowers:brainstorming` to explore the problem space and produce a spec. Use `superpowers:writing-plans` to decompose the spec into implementation tasks.
 
-Add the following to `~/.claude.json` under `mcpServers`:
+### 2. Assign through Agency
 
-```json
-{
-  "mcpServers": {
-    "agency": {
-      "command": "/absolute/path/to/agency",
-      "args": ["mcp"],
-      "env": {
-        "AGENCY_TOKEN_FILE": "/Users/you/.agency-mcp-token"
-      }
-    }
-  }
-}
+Call `agency_assign` with the tasks from the plan. Agency composes agents by matching task descriptions to its primitive store (role components, desired outcomes, trade-off configurations).
+
+```
+agency_assign({
+  tasks: [
+    { external_id: "task-1", description: "...", skills: [...], deliverables: [...] },
+    { external_id: "task-2", description: "...", skills: [...], deliverables: [...] }
+  ]
+})
 ```
 
-Both `command` and `AGENCY_TOKEN_FILE` must be absolute paths. Do not use `~`.
+Each task gets back a `rendered_prompt` (the agent composition) and an `agency_task_id`.
 
-To find the absolute path: `which agency`
+### 3. Dispatch subagents with Agency prompts
 
-## Response format
+Use `superpowers:subagent-driven-development` or `superpowers:dispatching-parallel-agents` to execute the tasks. Each subagent receives the `rendered_prompt` from Agency as its operating instructions.
 
-### Success
+The rendered prompt contains:
+- **Role** — selected role components (capabilities)
+- **Desired outcome** — what success looks like
+- **Trade-offs** — how to navigate competing priorities
+- **Task** — the specific work to do
+- **Output format** — structure and format expectations
 
-Each tool returns its own response shape (see tool documentation below). All successful responses include a `next_step` field with plain-language instructions for what to do next.
+### 4. Evaluate via Agency
 
-### Error
+After each subagent completes, call `agency_evaluator` with the `agency_task_id` to get the evaluation prompt and callback JWT. Run the evaluation (either in the same session or via a review subagent), then call `agency_submit_evaluation` with the result.
 
-All error responses use a standard envelope:
+Optional structured fields:
+- `score` (0–100) — numeric assessment
+- `task_completed` (true/false) — completion status
+- `score_type` — how to interpret the score (`binary`, `rubric`, `likert`, `percentage`)
 
-```json
-{
-  "status": "error",
-  "code": 404,
-  "message": "Task not found for agency_task_id: {id}.",
-  "cause": "The ID does not match any task. Most common mistake: passing your external_id instead of the agency_task_id returned by agency_assign.",
-  "fix": "Check the agency_assign response — use the agency_task_id field, not external_id."
-}
-```
+### 5. Review with Superpowers
 
-- `code` — HTTP status code, or `null` if the error occurred before any HTTP call
-- `message` — what went wrong
-- `cause` — most likely reason
-- `fix` — exact command or action to resolve
+Use `superpowers:requesting-code-review` or `superpowers:verification-before-completion` for the final quality gate. This is separate from Agency's evaluation — Superpowers reviews the work against the plan; Agency evaluates the agent's performance against its composition.
 
-## Tools
+## Key integration points
 
-### `agency_assign`
+### Agency assigns, you execute
 
-Compose AI agents for a set of tasks and return their prompts. Agency is a prompt composer — it does not execute tasks. The requester must execute each task using the returned `rendered_prompt`.
+Agency composes agents but does not execute tasks. When using `subagent-driven-development`, you dispatch the subagents yourself using the rendered prompts from `agency_assign`. Agency has no awareness of your subagent infrastructure.
 
-**Parameters:**
+### One agency_task_id per subagent
 
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `project_id` | string | No | Project UUID. Resolves from: `.agency-project` > `AGENCY_PROJECT_ID` env > `agency.toml [project] default_id` |
-| `tasks` | array | Yes | At least one task object |
+Each task assigned through Agency gets a unique `agency_task_id`. Use this (not your `external_id`) when calling `agency_evaluator` and `agency_submit_evaluation`. The `agency_task_id_note` in the assign response reminds you of this.
 
-Each task object:
+### Evaluation builds inter-deployment memory
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `external_id` | string | Yes | Your identifier for this task |
-| `description` | string | Yes | What the task requires. Agency uses this to select primitives and compose the agent. |
-| `skills` | array of strings | No | Skill tags to influence primitive selection |
-| `deliverables` | array of strings | No | Expected outputs |
+Every evaluation submitted through `agency_submit_evaluation` is recorded against the specific primitive composition that produced the agent. Over time, this builds performance data that Agency uses to improve future compositions. Skipping evaluation means Agency learns nothing from that deployment.
 
-**Response:**
+### .agency-project for per-repo defaults
 
-```json
-{
-  "assignments": {
-    "<external_id>": {
-      "agency_task_id": "uuid-v7",
-      "agency_task_id_note": "Use this agency_task_id (not your external_id) when calling agency_evaluator and agency_submit_evaluation.",
-      "agent_hash": "sha256-hex"
-    }
-  },
-  "agents": {
-    "<agent_hash>": {
-      "rendered_prompt": "string",
-      "content_hash": "string",
-      "template_id": "string",
-      "primitive_ids": { "role_components": [], "desired_outcomes": [], "trade_off_configs": [] }
-    }
-  },
-  "next_step": "You must now execute each task yourself..."
-}
-```
+Create a `.agency-project` file in your repo root (`agency project pin`) to set a default project. This takes precedence over environment variables and global config, so different repos can use different Agency projects without changing global state.
 
-Use `agent_hash` from the assignment to look up the `rendered_prompt` in the `agents` map.
+## What not to do
 
-### `agency_evaluator`
-
-Get the evaluator prompt and callback JWT for a completed task.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `agency_task_id` | string | Yes | The `agency_task_id` from `agency_assign` (not your `external_id`) |
-
-**Response:**
-
-```json
-{
-  "evaluator_prompt": "string",
-  "callback_jwt": "string",
-  "agency_task_id": "string",
-  "next_step": "Evaluate the output you produced for this task..."
-}
-```
-
-The `evaluator_prompt` tells you how to evaluate. The `callback_jwt` is single-use (24h expiry) and authorises the evaluation submission.
-
-### `agency_submit_evaluation`
-
-Submit your evaluation of a completed task.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `agency_task_id` | string | Yes | The `agency_task_id` from `agency_assign` |
-| `callback_jwt` | string | Yes | The `callback_jwt` from `agency_evaluator`. Single-use. |
-| `output` | string | Yes | Your evaluation text |
-| `score` | integer | No | Numeric score (0–100) |
-| `task_completed` | boolean | No | Whether the task was fully completed |
-| `score_type` | string | No | How to interpret the score: `binary`, `rubric`, `likert`, or `percentage` |
-
-**Response:**
-
-```json
-{
-  "status": "accepted",
-  "content_hash": "sha256-hex",
-  "next_step": "Evaluation recorded. The assign-execute-evaluate loop for this task is complete."
-}
-```
-
-### `agency_list_projects`
-
-List all projects in this Agency instance.
-
-**Parameters:** None.
-
-**Response:**
-
-```json
-{
-  "projects": [
-    { "id": "uuid", "name": "string", "description": "string or null", "is_default": true, "created_at": "ISO-8601" }
-  ],
-  "default_project_id": "uuid or null",
-  "default_source": "repo_config | env_var | toml_config | none",
-  "next_step": "Pass a project_id to agency_assign, or omit it to use the default project."
-}
-```
-
-`default_source` tells you how the default was resolved.
-
-### `agency_create_project`
-
-Create a new Agency project.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `name` | string | Yes | Project name (1–255 characters) |
-| `description` | string | No | Project description |
-| `contact_email` | string | No | Contact email for agent prompts |
-| `oversight_preference` | string | No | `discretion` or `review` |
-| `error_notification_timeout` | integer | No | Timeout in seconds |
-| `attribution` | boolean | No | Agent output attribution |
-| `set_as_default` | boolean | No | Set as default in agency.toml |
-
-**Response:**
-
-```json
-{
-  "project_id": "uuid",
-  "name": "string",
-  "is_default": true,
-  "settings_applied": { ... },
-  "next_step": "This project is now available for task assignment..."
-}
-```
-
-Omitted settings inherit from instance defaults.
-
-### `agency_status`
-
-Get instance status: projects, active tasks, task progress, and primitive store health.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `project_id` | string | No | Filter to a single project |
-
-**Response:**
-
-```json
-{
-  "instance_id": "uuid",
-  "server_version": "1.2.1",
-  "uptime_seconds": 3600,
-  "projects": [
-    {
-      "id": "uuid", "name": "string", "is_default": true,
-      "task_summary": { "total": 10, "assigned": 3, "evaluation_pending": 2, "evaluation_received": 5 },
-      "active_tasks": [ { "agency_task_id": "uuid", "state": "assigned", ... } ]
-    }
-  ],
-  "primitive_counts": { "role_components": 150, "desired_outcomes": 80, "trade_off_configs": 40, "eligible": 200 },
-  "next_step": "..."
-}
-```
-
-The `next_step` is context-sensitive — it tells you about assigned tasks needing evaluation if any exist.
-
-## Caller protocol
-
-The full assign → execute → evaluate loop:
-
-1. **`agency_assign`** — compose agents for your tasks, receive rendered prompts
-2. **Execute** — adopt each `rendered_prompt` as your operating instructions and do the work (Agency does not execute)
-3. **`agency_evaluator`** — get evaluation criteria and callback JWT for each completed task
-4. **Evaluate** — follow the `evaluator_prompt` to assess your own output
-5. **`agency_submit_evaluation`** — submit evaluation text, optionally with score and completion status
-
-Full protocol documentation: [caller-protocol.md](caller-protocol.md)
-
-## Project ID resolution
-
-When `agency_assign` is called without an explicit `project_id`, it resolves in this order:
-
-1. `.agency-project` file in the requester's working directory (or parent directories)
-2. `AGENCY_PROJECT_ID` environment variable
-3. `[project] default_id` in `agency.toml`
-
-Resolution happens at call time — changes take effect without restarting the MCP server.
-
-To pin a project to a repo: `agency project pin --project-id <uuid>`
-
-## Token management
-
-The MCP server reads its bearer token from `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`).
-
-```bash
-# Create
-agency token create --client-id mcp > ~/.agency-mcp-token
-
-# Revoke
-agency token revoke --client-id mcp
-
-# Recreate after keypair rotation
-agency token create --client-id mcp > ~/.agency-mcp-token
-```
-
-## Troubleshooting
-
-**"Cannot reach Agency server"** — `agency serve` is not running. The MCP server continues operating after a failed health check and retries each tool call once (2s delay).
-
-**"MCP token file not found"** — Create a token: `agency token create --client-id mcp > ~/.agency-mcp-token`
-
-**"No project ID provided"** — Create a `.agency-project` file (`agency project pin`), set `AGENCY_PROJECT_ID`, or configure a default project.
-
-**"Callback JWT is invalid, expired, or already used"** — Each callback JWT is single-use with a 24-hour expiry. Call `agency_evaluator` again to get a fresh one.
-
-**Tools not appearing in Claude Code** — Check that `~/.claude.json` has the `agency` entry under `mcpServers` with an absolute path. Run `agency init` to re-register.
+- **Don't skip the evaluation loop.** Agency's value comes from recording which compositions work well for which tasks. Assign → execute → evaluate is the full cycle.
+- **Don't write your own agent prompts and pass them to Agency.** Agency composes prompts from its primitive store — that's the point. Describe the task; let Agency select the primitives.
+- **Don't use `external_id` for evaluation calls.** Always use `agency_task_id` from the assign response.
