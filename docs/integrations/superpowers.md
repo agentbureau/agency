@@ -1,10 +1,10 @@
-# Agency + Superpowers Integration
+# Agency + Claude Code / Superpowers Integration
 
-Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the three tools, response format, and common usage patterns.
+Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the six tools, response formats, and the caller protocol.
 
 ## Prerequisites
 
-- Agency v1.2.0 or later installed (`pip install agency-engine`)
+- Agency v1.2.1 or later installed (`pipx install agency-engine`)
 - `agency init` completed (Phase 1 and Phase 2)
 - `agency serve` running
 - A valid MCP token at `~/.agency-mcp-token`
@@ -15,7 +15,7 @@ If you ran `agency init` through both phases, all of these are already in place.
 
 ### Automatic (recommended)
 
-During `agency init` Phase 1 Step 1.6, the wizard offers to register Agency as an MCP server in `~/.claude.json`. If you accepted, setup is complete.
+During `agency init` Phase 1 Step 1.6, the wizard registers Agency as an MCP server in `~/.claude.json` using the absolute path to the `agency` binary. If you accepted, setup is complete.
 
 ### Manual
 
@@ -25,7 +25,7 @@ Add the following to `~/.claude.json` under `mcpServers`:
 {
   "mcpServers": {
     "agency": {
-      "command": "agency",
+      "command": "/absolute/path/to/agency",
       "args": ["mcp"],
       "env": {
         "AGENCY_TOKEN_FILE": "/Users/you/.agency-mcp-token"
@@ -35,201 +35,259 @@ Add the following to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-`AGENCY_TOKEN_FILE` must be an absolute path. Do not use `~`.
+Both `command` and `AGENCY_TOKEN_FILE` must be absolute paths. Do not use `~`.
 
-To update the registration after changing server settings:
+To find the absolute path: `which agency`
 
-```bash
-agency client setup
-```
-
-The setup wizard offers to update the MCP registration at the end.
-
-## Response envelope
-
-All three tools return JSON with a status envelope. Check `status` before accessing any other fields.
+## Response format
 
 ### Success
 
-```json
-{
-  "status": "ok",
-  ...additional fields specific to the tool
-}
-```
+Each tool returns its own response shape (see tool documentation below). All successful responses include a `next_step` field with plain-language instructions for what to do next.
 
 ### Error
+
+All error responses use a standard envelope:
 
 ```json
 {
   "status": "error",
   "code": 404,
-  "message": "task not found"
+  "message": "Task not found for agency_task_id: {id}.",
+  "cause": "The ID does not match any task. Most common mistake: passing your external_id instead of the agency_task_id returned by agency_assign.",
+  "fix": "Check the agency_assign response — use the agency_task_id field, not external_id."
 }
 ```
 
-`code` is the HTTP status code from the Agency server, or `null` if the error occurred before any HTTP call (e.g. no project configured, server unreachable).
+- `code` — HTTP status code, or `null` if the error occurred before any HTTP call
+- `message` — what went wrong
+- `cause` — most likely reason
+- `fix` — exact command or action to resolve
 
 ## Tools
 
 ### `agency_assign`
 
-Assign one or more tasks to AI agents. Agency composes agent descriptions from its primitive store and returns rendered prompts.
+Compose AI agents for a set of tasks and return their prompts. Agency is a prompt composer — it does not execute tasks. The requester must execute each task using the returned `rendered_prompt`.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `project_id` | string | No | Project UUID. If omitted, resolves from `AGENCY_PROJECT_ID` env var, then `[project] default_id` in `agency.toml`. |
-| `tasks` | array | Yes | List of task objects (see below). |
+| `project_id` | string | No | Project UUID. Resolves from: `.agency-project` > `AGENCY_PROJECT_ID` env > `agency.toml [project] default_id` |
+| `tasks` | array | Yes | At least one task object |
 
 Each task object:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `external_id` | string | Yes | Your identifier for this task (e.g. a ticket ID). |
-| `description` | string | Yes | What the agent should do. |
-| `skills` | array of strings | No | Desired skills or capabilities. |
-| `deliverables` | array of strings | No | Expected outputs. |
+| `external_id` | string | Yes | Your identifier for this task |
+| `description` | string | Yes | What the task requires. Agency uses this to select primitives and compose the agent. |
+| `skills` | array of strings | No | Skill tags to influence primitive selection |
+| `deliverables` | array of strings | No | Expected outputs |
 
-**Success response:**
-
-```json
-{
-  "status": "ok",
-  "assignment": {
-    "assignments": [
-      {
-        "task_id": "...",
-        "external_id": "...",
-        "agent_prompt": "...",
-        "evaluator_prompt": "...",
-        "permission_block": "..."
-      }
-    ]
-  }
-}
-```
-
-Access the list of task assignments at `assignment.assignments`. Each entry contains the rendered agent prompt, the evaluator prompt, and the permission block.
-
-**Error when no project is configured:**
+**Response:**
 
 ```json
 {
-  "status": "error",
-  "code": null,
-  "message": "No project ID: pass project_id, set AGENCY_PROJECT_ID, or configure [project] default_id in agency.toml"
+  "assignments": {
+    "<external_id>": {
+      "agency_task_id": "uuid-v7",
+      "agency_task_id_note": "Use this agency_task_id (not your external_id) when calling agency_evaluator and agency_submit_evaluation.",
+      "agent_hash": "sha256-hex"
+    }
+  },
+  "agents": {
+    "<agent_hash>": {
+      "rendered_prompt": "string",
+      "content_hash": "string",
+      "template_id": "string",
+      "primitive_ids": { "role_components": [], "desired_outcomes": [], "trade_off_configs": [] }
+    }
+  },
+  "next_step": "You must now execute each task yourself..."
 }
 ```
+
+Use `agent_hash` from the assignment to look up the `rendered_prompt` in the `agents` map.
 
 ### `agency_evaluator`
 
-Get the evaluator prompt and a callback JWT for a task that has been completed. The evaluator prompt tells the evaluating agent how to assess the work. The callback JWT authorises the evaluation submission.
+Get the evaluator prompt and callback JWT for a completed task.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `agency_task_id` | string | Yes | The Agency task ID (from `agency_assign` response). |
+| `agency_task_id` | string | Yes | The `agency_task_id` from `agency_assign` (not your `external_id`) |
 
-**Success response:**
+**Response:**
 
 ```json
 {
-  "status": "ok",
-  "evaluator_prompt": "You are evaluating the output of...",
-  "callback_jwt": "eyJ..."
+  "evaluator_prompt": "string",
+  "callback_jwt": "string",
+  "agency_task_id": "string",
+  "next_step": "Evaluate the output you produced for this task..."
 }
 ```
 
-**Error responses:**
-
-- `code: 404` — task not found
-- `code: 422` — task has no evaluator assigned
+The `evaluator_prompt` tells you how to evaluate. The `callback_jwt` is single-use (24h expiry) and authorises the evaluation submission.
 
 ### `agency_submit_evaluation`
 
-Submit the evaluation output for a completed task. The submission includes content hash verification to confirm transmission integrity.
+Submit your evaluation of a completed task.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `agency_task_id` | string | Yes | The Agency task ID. |
-| `callback_jwt` | string | Yes | The callback JWT from `agency_evaluator`. |
-| `output` | string | Yes | The evaluation output text. |
+| `agency_task_id` | string | Yes | The `agency_task_id` from `agency_assign` |
+| `callback_jwt` | string | Yes | The `callback_jwt` from `agency_evaluator`. Single-use. |
+| `output` | string | Yes | Your evaluation text |
+| `score` | integer | No | Numeric score (0–100) |
+| `task_completed` | boolean | No | Whether the task was fully completed |
+| `score_type` | string | No | How to interpret the score: `binary`, `rubric`, `likert`, or `percentage` |
 
-**Success response:**
-
-```json
-{
-  "status": "ok",
-  "content_hash": "a1b2c3d4..."
-}
-```
-
-`content_hash` is the SHA-256 hex digest of the submitted output as received by the server. If you need transmission integrity confirmation, compute the hash locally and compare. A mismatch means the content was altered in transit — retry the submission.
-
-**Hash mismatch error:**
+**Response:**
 
 ```json
 {
-  "status": "error",
-  "code": null,
-  "message": "Content hash mismatch: local=... server=..."
+  "status": "accepted",
+  "content_hash": "sha256-hex",
+  "next_step": "Evaluation recorded. The assign-execute-evaluate loop for this task is complete."
 }
 ```
 
-This error fires automatically if the server-reported hash does not match the locally computed hash. Retry the submission.
+### `agency_list_projects`
 
-## Typical workflow
+List all projects in this Agency instance.
 
-The three tools form a pipeline: assign, evaluate, submit.
+**Parameters:** None.
 
-1. **Assign tasks** using `agency_assign`. You get back rendered agent prompts for each task.
-2. **Execute the tasks** using the agent prompts (this happens outside Agency — in Claude Code, Workgraph, or any other task runner).
-3. **Get the evaluator** using `agency_evaluator` with the task ID from step 1.
-4. **Run the evaluation** using the evaluator prompt returned in step 3.
-5. **Submit the evaluation** using `agency_submit_evaluation` with the callback JWT from step 3 and the evaluation output from step 4.
+**Response:**
+
+```json
+{
+  "projects": [
+    { "id": "uuid", "name": "string", "description": "string or null", "is_default": true, "created_at": "ISO-8601" }
+  ],
+  "default_project_id": "uuid or null",
+  "default_source": "repo_config | env_var | toml_config | none",
+  "next_step": "Pass a project_id to agency_assign, or omit it to use the default project."
+}
+```
+
+`default_source` tells you how the default was resolved.
+
+### `agency_create_project`
+
+Create a new Agency project.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `name` | string | Yes | Project name (1–255 characters) |
+| `description` | string | No | Project description |
+| `contact_email` | string | No | Contact email for agent prompts |
+| `oversight_preference` | string | No | `discretion` or `review` |
+| `error_notification_timeout` | integer | No | Timeout in seconds |
+| `attribution` | boolean | No | Agent output attribution |
+| `set_as_default` | boolean | No | Set as default in agency.toml |
+
+**Response:**
+
+```json
+{
+  "project_id": "uuid",
+  "name": "string",
+  "is_default": true,
+  "settings_applied": { ... },
+  "next_step": "This project is now available for task assignment..."
+}
+```
+
+Omitted settings inherit from instance defaults.
+
+### `agency_status`
+
+Get instance status: projects, active tasks, task progress, and primitive store health.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `project_id` | string | No | Filter to a single project |
+
+**Response:**
+
+```json
+{
+  "instance_id": "uuid",
+  "server_version": "1.2.1",
+  "uptime_seconds": 3600,
+  "projects": [
+    {
+      "id": "uuid", "name": "string", "is_default": true,
+      "task_summary": { "total": 10, "assigned": 3, "evaluation_pending": 2, "evaluation_received": 5 },
+      "active_tasks": [ { "agency_task_id": "uuid", "state": "assigned", ... } ]
+    }
+  ],
+  "primitive_counts": { "role_components": 150, "desired_outcomes": 80, "trade_off_configs": 40, "eligible": 200 },
+  "next_step": "..."
+}
+```
+
+The `next_step` is context-sensitive — it tells you about assigned tasks needing evaluation if any exist.
+
+## Caller protocol
+
+The full assign → execute → evaluate loop:
+
+1. **`agency_assign`** — compose agents for your tasks, receive rendered prompts
+2. **Execute** — adopt each `rendered_prompt` as your operating instructions and do the work (Agency does not execute)
+3. **`agency_evaluator`** — get evaluation criteria and callback JWT for each completed task
+4. **Evaluate** — follow the `evaluator_prompt` to assess your own output
+5. **`agency_submit_evaluation`** — submit evaluation text, optionally with score and completion status
+
+Full protocol documentation: [caller-protocol.md](caller-protocol.md)
 
 ## Project ID resolution
 
-When `agency_assign` is called without an explicit `project_id`, it resolves the project in this order:
+When `agency_assign` is called without an explicit `project_id`, it resolves in this order:
 
-1. `AGENCY_PROJECT_ID` environment variable
-2. `[project] default_id` in `agency.toml`
-3. Error (no project configured)
+1. `.agency-project` file in the requester's working directory (or parent directories)
+2. `AGENCY_PROJECT_ID` environment variable
+3. `[project] default_id` in `agency.toml`
 
-The resolution happens at call time — `agency.toml` is re-read on every call. If you change the default project while the MCP server is running, the next `agency_assign` call picks up the change without restarting.
+Resolution happens at call time — changes take effect without restarting the MCP server.
+
+To pin a project to a repo: `agency project pin --project-id <uuid>`
 
 ## Token management
 
-The MCP server reads its authentication token from the file at `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`). This token is created during `agency init` Phase 2 Step 2.5, or manually:
+The MCP server reads its bearer token from `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`).
 
 ```bash
+# Create
 agency token create --client-id mcp > ~/.agency-mcp-token
-```
 
-To list or revoke tokens:
-
-```bash
-agency token list
+# Revoke
 agency token revoke --client-id mcp
-```
 
-If you rotate the signing keypair (via `agency client setup`), all existing tokens are invalidated. Recreate them:
-
-```bash
+# Recreate after keypair rotation
 agency token create --client-id mcp > ~/.agency-mcp-token
 ```
 
 ## Troubleshooting
 
-**"Agency server not reachable"** — The MCP server checks `GET /health` at startup. Make sure `agency serve` is running.
+**"Cannot reach Agency server"** — `agency serve` is not running. The MCP server continues operating after a failed health check and retries each tool call once (2s delay).
 
-**"token file not found"** — Create a token: `agency token create --client-id mcp > ~/.agency-mcp-token`
+**"MCP token file not found"** — Create a token: `agency token create --client-id mcp > ~/.agency-mcp-token`
 
-**"No project ID"** — Either pass `project_id` explicitly, set `AGENCY_PROJECT_ID`, or create a default project: `agency project create`
+**"No project ID provided"** — Create a `.agency-project` file (`agency project pin`), set `AGENCY_PROJECT_ID`, or configure a default project.
 
-**Tools not appearing in Claude Code** — Check that `~/.claude.json` has the `agency` entry under `mcpServers`. Run `agency client setup` and accept the MCP registration update.
+**"Callback JWT is invalid, expired, or already used"** — Each callback JWT is single-use with a 24-hour expiry. Call `agency_evaluator` again to get a fresh one.
+
+**Tools not appearing in Claude Code** — Check that `~/.claude.json` has the `agency` entry under `mcpServers` with an absolute path. Run `agency init` to re-register.
