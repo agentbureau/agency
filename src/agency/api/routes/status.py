@@ -41,7 +41,7 @@ def get_status(request: Request, project_id: str | None = None):
                 t.id AS agency_task_id,
                 t.external_id,
                 t.description,
-                t.agent_composition_id,
+                a.content_hash AS agent_hash,
                 t.created_at,
                 CASE
                     WHEN pe.id IS NULL    THEN 'assigned'
@@ -49,6 +49,7 @@ def get_status(request: Request, project_id: str | None = None):
                     WHEN pe.confirmed = 1 THEN 'evaluation_received'
                 END AS state
             FROM tasks t
+            LEFT JOIN agents a ON a.id = t.agent_composition_id
             LEFT JOIN pending_evaluations pe ON pe.task_id = t.id
             WHERE t.project_id = ?
             """,

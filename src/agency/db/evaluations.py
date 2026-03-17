@@ -55,3 +55,31 @@ def ping_evaluation(conn: sqlite3.Connection, evaluation_id: str) -> None:
         (evaluation_id,),
     )
     conn.commit()
+
+
+def get_evaluation_by_task_id(conn: sqlite3.Connection, task_id: str) -> dict | None:
+    """Get evaluation for a task, cherry-picking fields for the API response.
+
+    Returns None when no evaluation exists. When present, returns a dict
+    matching the evaluation sub-object schema in PRD §3.0.
+    """
+    import json
+
+    row = conn.execute(
+        """SELECT pe.content_hash, pe.evaluator_data, pe.confirmed, pe.created_at
+           FROM pending_evaluations pe
+           WHERE pe.task_id = ?""",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    data = json.loads(row[1])
+    return {
+        "evaluation_status": "confirmed" if row[2] else "pending",
+        "output": data.get("output"),
+        "content_hash": row[0],
+        "score": data.get("score"),
+        "score_type": data.get("score_type"),
+        "task_completed": data.get("task_completed"),
+        "submitted_at": row[3],
+    }

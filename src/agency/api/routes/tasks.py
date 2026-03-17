@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request, HTTPException
 from agency.models.tasks import TaskRequest, AgentResponse, EvaluatorResponse
 from agency.models.evaluations import EvaluationReport
 from agency.db.tasks import create_task, get_task, set_task_composition
+from agency.db.evaluations import get_evaluation_by_task_id
+from agency.engine.renderer import reconstruct_rendered_prompt
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -149,7 +151,67 @@ def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
         conn.execute("ROLLBACK")
         raise
 
-    return {"status": "accepted", "content_hash": hash_}
+    return {"status": "ok", "content_hash": hash_}
+
+
+@router.get("/{task_id}")
+def get_task_state(task_id: str, request: Request):
+    """GET /tasks/{task_id} — retrieve full task record with state and composition."""
+    conn = request.app.state.db
+
+    # Task state derivation via LEFT JOIN — same pattern as status endpoint
+    row = conn.execute(
+        """
+        SELECT
+            t.id AS agency_task_id, t.external_id, t.project_id,
+            t.created_at, t.agent_composition_id,
+            a.content_hash AS agent_hash,
+            CASE
+                WHEN pe.id IS NULL    THEN 'assigned'
+                WHEN pe.confirmed = 0 THEN 'evaluation_pending'
+                WHEN pe.confirmed = 1 THEN 'evaluation_received'
+            END AS state
+        FROM tasks t
+        LEFT JOIN agents a ON a.id = t.agent_composition_id
+        LEFT JOIN pending_evaluations pe ON pe.task_id = t.id
+        WHERE t.id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail={
+            "error": "not_found",
+            "message": f"Task not found for agency_task_id: {task_id}.",
+            "cause": "The ID does not match any task.",
+            "fix": "Check the agency_task_id from the agency_assign response.",
+        })
+
+    agency_task_id = row[0]
+    external_id = row[1]
+    project_id = row[2]
+    created_at = row[3]
+    agent_hash = row[5]
+    state = row[6]
+
+    # Re-render prompt from stored composition
+    render_result = reconstruct_rendered_prompt(conn, task_id)
+
+    # Get evaluation if present
+    evaluation = get_evaluation_by_task_id(conn, task_id)
+
+    return {
+        "status": "ok",
+        "agency_task_id": agency_task_id,
+        "external_id": external_id,
+        "project_id": project_id,
+        "state": state,
+        "agent_hash": agent_hash,
+        "rendered_prompt": render_result["rendered_prompt"],
+        "rendering_warnings": render_result["rendering_warnings"],
+        "created_at": created_at,
+        "evaluation": evaluation,
+    }
 
 
 def _notify_empty_primitives(request: Request, project_id: str | None) -> None:
