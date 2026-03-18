@@ -13,8 +13,10 @@ def suppress_hf_warnings():
     Shared utility — call before any sentence-transformers import.
     """
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     logging.getLogger("transformers").setLevel(logging.ERROR)
     logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     print(f"Loading embedding model ({EMBEDDING_MODEL}) — this may take a moment on first run.")
 
 
