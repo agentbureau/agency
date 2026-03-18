@@ -1,5 +1,5 @@
-# Agency — specification v1.2.1
-*2026-03-17*
+# Agency — specification v1.2.2
+*2026-03-18*
 
 ---
 
@@ -10,6 +10,8 @@ Agency is a standalone service for composing, assigning, evaluating, and evolvin
 Agency does not execute tasks. It composes and assigns agent descriptions; the task manager executes tasks using those descriptions. Agency works with any task management system.
 
 v1.2.0 adds native MCP integration for Claude Code, Ed25519 authentication, token management, the permission model, a two-phase setup wizard, instance/project configuration hierarchy, agent output attribution, primitive quality scores and distribution, and SMTP error notification.
+
+v1.2.2 adds CLI task commands (`agency task {assign,evaluator,submit,get}`), a shared client module, a new `GET /tasks/{task_id}` API endpoint with re-rendering pipeline, the `agency_get_task` MCP tool, `error_type` in all error responses, `task_ids` summary block in assign responses, and `status: "ok"` across all success responses.
 
 ---
 
@@ -334,7 +336,7 @@ Transport: stdio. Launched by Claude Code as a subprocess. Requires `agency serv
 
 At startup, reads: Agency URL from `agency.toml`, JWT token from `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`), default project ID from `AGENCY_PROJECT_ID` env var or `agency.toml [project] default_id`.
 
-Three tools:
+Seven tools (v1.2.2):
 
 #### `agency_assign`
 
@@ -372,7 +374,65 @@ Calls `GET /tasks/{agency_task_id}/evaluator`. Returns `evaluator_prompt` and `c
 }
 ```
 
-Calls `POST /tasks/{agency_task_id}/evaluation`. Returns `{"status": "accepted", "content_hash": "<sha256>"}`. The caller should verify the returned content hash against the SHA-256 of the payload sent.
+Calls `POST /tasks/{agency_task_id}/evaluation`. Returns `{"status": "ok", "content_hash": "<sha256>"}`. The caller should verify the returned content hash against the SHA-256 of the payload sent.
+
+#### `agency_get_task` (v1.2.2)
+
+```json
+{ "agency_task_id": "string" }
+```
+
+Calls `GET /tasks/{agency_task_id}`. Returns full task record: state (assigned/evaluation_pending/evaluation_received), agent_hash, re-rendered prompt, rendering warnings, and evaluation sub-object (null or full).
+
+#### `agency_list_projects` (v1.2.1)
+
+No parameters. Calls `GET /projects`. Returns list of projects with default identification.
+
+#### `agency_create_project` (v1.2.1)
+
+```json
+{ "name": "string", "description": "string (optional)", "set_as_default": "boolean (optional)" }
+```
+
+Calls `POST /projects`. Returns project_id and settings_applied.
+
+#### `agency_status` (v1.2.1)
+
+```json
+{ "project_id": "string (optional)" }
+```
+
+Calls `GET /status`. Returns instance status, per-project task summaries, and primitive counts.
+
+### CLI task commands (v1.2.2)
+
+Four non-interactive commands mirroring the MCP task tools. All call the shared client module (`agency/client.py`).
+
+```bash
+agency task assign   --tasks '<json>' [--tasks-file <path>] [--tasks-stdin] [--project-id <uuid>]
+agency task evaluator --task-id <uuid> [--save-jwt <path>]
+agency task submit   --task-id <uuid> --callback-jwt <jwt> --output <text> [--score 0-100]
+agency task get      --task-id <uuid>
+```
+
+Shared flags: `--client-id` (default `cli`), `--timeout` (default 30), `--format json|table`, `--no-guidance`, `--quiet/-q`.
+
+Exit codes: 0 success, 1 client error, 2 server error, 3 application error.
+
+### Error response schema (v1.2.2)
+
+All error responses include six fields:
+
+```json
+{
+  "status": "error",
+  "error_type": "transient | auth | not_found | validation | permanent",
+  "code": 404,
+  "message": "Task not found.",
+  "cause": "The agency_task_id does not match any task.",
+  "fix": "Check the agency_task_id from the assign response."
+}
+```
 
 ### Project level
 
@@ -424,6 +484,10 @@ The batch endpoint is the preferred integration pattern. The calling tool sends 
 
 ```json
 {
+  "status": "ok",
+  "task_ids": [
+    {"external_id": "string", "agency_task_id": "uuid-v7", "agent_hash": "sha256-hex"}
+  ],
   "assignments": {
     "<external_id>": {
       "agency_task_id": "uuid-v7",
@@ -454,7 +518,7 @@ The `agents` map is deduplicated. The response now includes `permission_block` p
 |---|---|
 | IN | Full evaluation report — `POST /tasks/{id}/evaluation` |
 
-The endpoint computes SHA-256 of the received payload and returns `{"status": "accepted", "content_hash": "<sha256>"}`. The caller verifies the returned hash against the hash of what was sent. Duplicate submissions (same `jti` + `task_id`) are rejected with `{"status": "duplicate"}`.
+The endpoint computes SHA-256 of the received payload and returns `{"status": "ok", "content_hash": "<sha256>"}`. The caller verifies the returned hash against the hash of what was sent. Duplicate submissions (same `jti` + `task_id`) are rejected with 401.
 
 ### Evolution oversight
 
@@ -548,7 +612,7 @@ Covers the full installation lifecycle. Every step checks whether it has already
 | 2.2 | Download embedding model (`all-MiniLM-L6-v2`, ~80MB) | Automatic |
 | 2.3 | Install starter primitives (fetch CSV from GitHub) | User confirms |
 | 2.4 | Create first project (runs project creation wizard) | User input |
-| 2.5 | Create integration tokens (MCP, Superpowers, Workgraph) | User selects |
+| 2.5 | Create integration tokens (MCP, CLI, Superpowers, Workgraph) | User selects |
 | 2.6 | Install Claude Code skill (`agency-primitive-extraction`) | Automatic |
 
 ### `agency client setup`
@@ -738,4 +802,14 @@ All v1.1.0 functionality is preserved. v1.2.0 is additive with these exceptions:
 
 7. **New tables:** `issued_tokens`, `pending_evaluations`, `primitive_mutations`.
 
-8. **`POST /tasks/{id}/evaluation` response** now returns `{"status": "accepted", "content_hash": "<sha256>"}`.
+8. **`POST /tasks/{id}/evaluation` response** now returns `{"status": "ok", "content_hash": "<sha256>"}` (changed from `"accepted"` in v1.2.2).
+
+### Compatibility with v1.2.1
+
+v1.2.2 is additive with these exceptions:
+
+1. **Submit response `status` changes from `"accepted"` to `"ok"`.** Requesters parsing `status == "accepted"` must update.
+2. **All error responses gain `error_type` field.** Additive — existing parsers that ignore unknown fields are unaffected.
+3. **Assign response gains `task_ids` summary block.** Additive.
+4. **`agents` table gains `template_id` column** via migration. Existing rows auto-populate with `"default"`. Inert in v1.2.2.
+5. **`agent_hash` in status endpoint** now returns `agents.content_hash` (SHA-256) instead of `agent_composition_id` (UUID).
