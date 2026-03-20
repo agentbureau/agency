@@ -344,10 +344,15 @@ def _step_configure_notifications(cfg: dict, toml_path: str) -> dict:
     click.echo("Configure notifications.\n")
     click.echo(f"  → {FIELD_EXPLAINERS['contact_email']}")
     contact_email = click.prompt("Contact email (Agency will notify this address)")
-    timeout_raw = click.prompt(
-        "Error notification timeout [1800 seconds / 30 minutes]", default="1800"
-    )
-    timeout = int(timeout_raw)
+    while True:
+        timeout_raw = click.prompt(
+            "Error notification timeout in seconds [1800 = 30 minutes]", default="1800"
+        )
+        try:
+            timeout = int(timeout_raw)
+            break
+        except ValueError:
+            click.echo(f"  Please enter a number (seconds). Got: '{timeout_raw}'")
     click.echo(f"  → {FIELD_EXPLAINERS['oversight_preference']}")
     click.echo("When a task description is unclear, should Agency:")
     click.echo("  (1) Use its discretion and proceed")

@@ -4,7 +4,9 @@
 
 Agency treats AI agents not as monolithic system prompts but as composable, evaluable, evolvable entities — structured the way organisations have always structured human work. It decomposes agents into independent primitives (role components, desired outcomes, trade-off configurations), composes them into agents matched to specific tasks, evaluates their performance, and uses the results to improve future compositions.
 
-Agency does not execute tasks. It composes agent descriptions and returns them to a task manager (Claude Code, Superpowers, or any MCP-compatible system) which executes the work. Agency handles composition, evaluation, and evolution; the task manager handles execution.
+Think of Agency as an employment agency for AI agents. A task manager comes in with a job description and leaves with a well-matched worker (or team). Agency does not do the work and does not manage the project. It knows what good workers look like for different kinds of jobs, remembers which placements worked out, and gets better at matching over time.
+
+Agency composes small, well-formed agents for small, well-defined tasks. It does not try to build one agent that can work unsupervised for hours — that is a runtime problem. Agency makes each individual agent as fit as possible for its specific job, then the task manager (Claude Code, Superpowers, or any MCP-compatible system) orchestrates across tasks and recomposes outputs. This makes Agency a complement to long-horizon agent runtimes, not a competitor.
 
 ## Why this exists
 
