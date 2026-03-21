@@ -67,22 +67,24 @@ Agency works with different task execution systems. Choose the guide that matche
 | **Superpowers** (brainstorming, plans, subagent dispatch) | [Using Agency with Superpowers](docs/integrations/using%20agency%20with%20superpowers.md) |
 | **Workgraph** (shell-based batch task execution) | [Using Agency with Workgraph](docs/integrations/using%20agency%20with%20workgraph.md) |
 
-The Claude Code guide is the primary reference — it covers all 6 MCP tools, setup, response formats, and troubleshooting. The Superpowers guide explains how Agency fits into Superpowers workflows. The Workgraph guide covers the standalone shell-based integration.
+The Claude Code guide is the primary reference — it covers all eight MCP tools, setup, response formats, and troubleshooting. The Superpowers guide explains how Agency fits into Superpowers workflows. The Workgraph guide covers the standalone shell-based integration.
 
 ## MCP tools
 
-Agency exposes six tools via the Model Context Protocol:
+Agency exposes eight tools via the Model Context Protocol:
 
 | Tool | Purpose |
 |---|---|
 | `agency_assign` | Compose agents for tasks, receive rendered prompts |
 | `agency_evaluator` | Get evaluation criteria and callback JWT for completed tasks |
 | `agency_submit_evaluation` | Submit structured evaluation results |
+| `agency_get_task` | Retrieve task state, composition, and evaluation status |
 | `agency_list_projects` | Discover available projects |
 | `agency_create_project` | Create new projects |
 | `agency_status` | Check instance health, task progress, primitive counts |
+| `agency_triage` | Lightweight primitive matching without full composition |
 
-The full caller protocol (assign → execute → evaluate) is documented in the [Claude Code integration guide](docs/integrations/using%20agency%20as%20an%20MCP%20with%20claude%20code.md#caller-protocol).
+The full requester protocol (assign → execute → evaluate) is documented in the [Claude Code integration guide](docs/integrations/using%20agency%20as%20an%20MCP%20with%20claude%20code.md#caller-protocol).
 
 ## Licence
 

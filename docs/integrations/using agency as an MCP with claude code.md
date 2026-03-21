@@ -1,6 +1,6 @@
 # Agency + Claude Code MCP Integration
 
-Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the six tools, response formats, and the caller protocol.
+Agency registers as a local MCP server in Claude Code, making its tools available natively during planning and task dispatch. This document covers setup, the eight tools, response formats, and the requester protocol.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ Add the following to `~/.claude.json` under `mcpServers`:
       "command": "/absolute/path/to/agency",
       "args": ["mcp"],
       "env": {
-        "AGENCY_TOKEN_FILE": "/Users/you/.agency-mcp-token"
+        "AGENCY_TOKEN_FILE": "~/.agency-mcp-token"
       }
     }
   }
@@ -153,7 +153,7 @@ Submit your evaluation of a completed task.
 
 ```json
 {
-  "status": "accepted",
+  "status": "ok",
   "content_hash": "sha256-hex",
   "next_step": "Evaluation recorded. The assign-execute-evaluate loop for this task is complete."
 }
@@ -210,6 +210,31 @@ Create a new Agency project.
 
 Omitted settings inherit from instance defaults.
 
+### `agency_get_task`
+
+Retrieve full task state, composition, and evaluation status.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `agency_task_id` | string | Yes | The `agency_task_id` from `agency_assign` |
+
+**Response:**
+
+```json
+{
+  "agency_task_id": "uuid",
+  "state": "assigned | evaluation_pending | evaluation_received",
+  "agent_hash": "sha256-hex",
+  "rendered_prompt": "string",
+  "evaluation": null,
+  "next_step": "..."
+}
+```
+
+`state` is derived at query time. `evaluation` is null until an evaluation is submitted, then contains the full evaluation record.
+
 ### `agency_status`
 
 Get instance status: projects, active tasks, task progress, and primitive store health.
@@ -241,7 +266,31 @@ Get instance status: projects, active tasks, task progress, and primitive store 
 
 The `next_step` is context-sensitive — it tells you about assigned tasks needing evaluation if any exist.
 
-## Caller protocol
+### `agency_triage`
+
+Lightweight, stateless primitive matching without full composition. Use to check whether Agency has relevant primitives for a task before paying the cost of full composition.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `description` | string | Yes | Task description to match against |
+
+**Response:**
+
+```json
+{
+  "matched_primitives": [
+    { "name": "string", "type": "role_component|desired_outcome|trade_off_config", "similarity": 0.0 }
+  ],
+  "recommendation": "compose | skip-safe",
+  "reasoning": "string"
+}
+```
+
+`recommendation` indicates whether full composition is likely to add value for this task.
+
+## Requester protocol
 
 The full assign → execute → evaluate loop:
 
@@ -252,6 +301,8 @@ The full assign → execute → evaluate loop:
 5. **`agency_submit_evaluation`** — submit evaluation text, optionally with score and completion status
 
 Full protocol documentation: [caller-protocol.md](caller-protocol.md)
+
+> **Terminology note:** "requester" refers to any task manager or human that calls Agency from outside to compose and receive agents. Internal server-side operations within Agency are not requester calls.
 
 ## Project ID resolution
 

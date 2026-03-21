@@ -65,3 +65,4 @@ Changes to the composition config take effect on the next `agency_assign` call (
 | `agency_list_projects` | List all projects |
 | `agency_create_project` | Create a new project |
 | `agency_status` | Instance health and task progress |
+| `agency_triage` | Lightweight primitive matching without full composition |
