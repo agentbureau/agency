@@ -13,7 +13,7 @@ v1.2.0 adds native MCP integration for Claude Code, Ed25519 authentication, toke
 
 v1.2.2 adds CLI task commands (`agency task {assign,evaluator,submit,get}`), a shared client module, a new `GET /tasks/{task_id}` API endpoint with re-rendering pipeline, the `agency_get_task` MCP tool, `error_type` in all error responses, `task_ids` summary block in assign responses, and `status: "ok"` across all success responses.
 
-v1.2.3 adds metaprimitives (primitives that govern Agency's own functional agents), a triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive setup flags, first-run onboarding, setup wizard improvements, critical persistence bug fixes, and two new bundled skills (`getting-started-with-agency`, `agency-composition-config`).
+v1.2.3 adds metaprimitives (primitives that govern Agency's own functional agents), a triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive setup flags, first-run onboarding, setup wizard improvements, critical persistence bug fixes, and two new bundled skills (`agency-getting-started`, `agency-composition-config`).
 
 ---
 
@@ -511,7 +511,7 @@ Installs bundled Claude Code skills into `~/.claude/skills/`. Idempotent — upd
 
 Bundled skills in v1.2.3:
 - `agency-primitive-extraction` — guides Claude through extracting and authoring Agency primitives from existing prompts and agent descriptions
-- `getting-started-with-agency` — interactive walkthrough of the Agency workflow (assign → execute → evaluate), primitives explanation, and optional CLAUDE.md configuration
+- `agency-getting-started` — interactive walkthrough of the Agency workflow (assign → execute → evaluate), primitives explanation, and optional CLAUDE.md configuration
 - `agency-composition-config` — guided editing of `~/.agency/composition-rules.csv` via Claude Code conversation
 
 ### Token commands
@@ -546,7 +546,7 @@ On the first successful `agency_assign` or `agency_status` MCP tool call, Agency
 {
   "first_run_onboarding": {
     "message": "Agency is set up and working. Would you like a quick walkthrough of how to use it?",
-    "skill_name": "getting-started-with-agency",
+    "skill_name": "agency-getting-started",
     "skip_instruction": "To skip, just proceed with your task. This message won't appear again."
   }
 }
@@ -554,7 +554,7 @@ On the first successful `agency_assign` or `agency_status` MCP tool call, Agency
 
 The field is injected in the MCP layer, not the API layer. Detection uses a marker file (`~/.agency/.onboarded`): absent = first run (inject and create marker), present = skip. The field appears once per instance lifetime.
 
-The `getting-started-with-agency` skill is also invocable at any time via `/getting-started-with-agency`.
+The `agency-getting-started` skill is also invocable at any time via `/agency-getting-started`.
 
 ---
 
@@ -729,4 +729,4 @@ v1.2.3 is additive with these exceptions:
 
 8. **Starter CSV gains `scope` column.** Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade to ingest 7 new metaprimitives.
 
-9. **New bundled skills:** `getting-started-with-agency`, `agency-composition-config`. Run `agency skills install` to install.
+9. **New bundled skills:** `agency-getting-started`, `agency-composition-config`. Run `agency skills install` to install.
