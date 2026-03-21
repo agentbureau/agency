@@ -1,4 +1,4 @@
-"""agency init — two-phase setup wizard for Agency v1.2.1."""
+"""agency init — two-phase setup wizard for Agency v1.2.3."""
 import json
 import os
 import pathlib
@@ -20,10 +20,26 @@ from agency.config.toml import load_config
 from agency.db.migrations import run_migrations, is_schema_current
 from agency.db.tokens import insert_token, revoke_tokens_by_client_id, token_table_exists
 
+from agency.cli.wizard_ui import (
+    status as wiz_status,
+    helper,
+    prompt as wiz_prompt,
+    prompt_bool,
+    prompt_choice,
+    SETTING_HELP,
+)
+
+# Backward-compatible alias — existing tests import this from init.py
+FIELD_EXPLAINERS = {
+    "contact_email": SETTING_HELP["contact_email"],
+    "oversight_preference": SETTING_HELP["oversight_preference"],
+    "attribution": SETTING_HELP["attribution"],
+}
+
 
 WELCOME_BANNER = """
 ======================================================================
-                         Agency  v1.2.1
+                         Agency  v1.2.3
 ======================================================================
 
 Hello and welcome to Agency — your engine for building and
@@ -43,35 +59,28 @@ errors later, this is the most likely cause.
 
 The wizard has 2 phases and 12 steps.
 
-  Phase 1 of 2 — Configuration  (6 steps, no server required)
+  Phase 1 of 2 — Configuration  (5 steps, no server required)
 
     Step 1.1   Generate instance credentials          automatic
     Step 1.2   Configure server settings              automatic
     Step 1.3   Configure LLM connection               * your input required
     Step 1.4   Configure notifications                * your input required
-    Step 1.5   Configure output defaults              automatic
-    Step 1.6   Register with Claude Code              * your input required
+    Step 1.5   Configure output defaults              * your input required
 
-  Phase 2 of 2 — Initialisation  (6 steps, runs the server briefly)
+  Phase 2 of 2 — Initialisation  (7 steps, runs the server briefly)
 
     Step 2.1   Initialise database                    automatic
     Step 2.2   Download embedding model               automatic
-    Step 2.3   Install starter primitives             * your input required
+    Step 2.3   Install starter primitives             automatic
     Step 2.4   Create your first project              * your input required
-    Step 2.5   Create integration tokens              * your input required
-    Step 2.6   Install Claude Code skill              automatic
+    Step 2.5   Create integration tokens              automatic
+    Step 2.6   Register with Claude Code              * your input required
+    Step 2.7   Install Claude Code skill              automatic
 
   * = requires your input or confirmation
 
 ------------------------------------------------------------------------
 """
-
-
-FIELD_EXPLAINERS = {
-    "contact_email": "Email address included in agent prompts for accountability. Visible to agents.",
-    "oversight_preference": 'How closely you want to review agent work: "discretion" (agent decides) or "review" (flag for human review).',
-    "attribution": "Whether agent output includes an attribution line identifying Agency.",
-}
 
 
 def _phase1_complete(cfg: dict, state_dir: str) -> bool:
@@ -116,9 +125,45 @@ def _write_toml(cfg: dict, path: str):
         tomli_w.dump(cfg, f)
 
 
+def _is_flag_provided(ctx: click.Context, param_name: str) -> bool:
+    """Return True if the flag was explicitly passed on the command line."""
+    source = ctx.get_parameter_source(param_name)
+    return source == click.core.ParameterSource.COMMANDLINE
+
+
+def _any_flag_provided(ctx: click.Context) -> bool:
+    """Return True if any flag was explicitly passed on the command line."""
+    for param in ctx.command.params:
+        if _is_flag_provided(ctx, param.name):
+            return True
+    return False
+
+
 @click.command("init")
-def init_command():
+@click.option("--backend", default="claude-code", help="LLM backend (claude-code, api, other)")
+@click.option("--model", default="claude-sonnet-4-6", help="LLM model name")
+@click.option("--endpoint", default="", help="LLM API endpoint")
+@click.option("--api-key", default="", help="LLM API key")
+@click.option("--email", default="", help="Contact email (empty = skip)")
+@click.option("--timeout", default=1800, type=int, help="Error notification timeout in seconds")
+@click.option("--oversight", default="discretion", help="Oversight preference (discretion or review)")
+@click.option("--attribution", default="on", help="Attribution (on or off)")
+@click.option("--project-name", default=None, help="First project name (skip if omitted)")
+@click.option("--set-default/--no-set-default", default=True, help="Set created project as default")
+@click.option("--register-mcp/--no-register-mcp", default=True, help="Register in ~/.claude.json")
+@click.option("--skip-primitives/--no-skip-primitives", default=False, help="Skip primitive download")
+@click.option("--smtp-host", default=None, help="SMTP host")
+@click.option("--smtp-port", default=587, type=int, help="SMTP port")
+@click.option("--smtp-username", default=None, help="SMTP username")
+@click.option("--smtp-password", default=None, help="SMTP password")
+@click.pass_context
+def init_command(ctx, backend, model, endpoint, api_key, email, timeout,
+                 oversight, attribution, project_name, set_default,
+                 register_mcp, skip_primitives, smtp_host, smtp_port,
+                 smtp_username, smtp_password):
     """Set up Agency — full two-phase installation wizard."""
+    non_interactive = _any_flag_provided(ctx)
+
     state_dir = os.environ.get("AGENCY_STATE_DIR", os.path.expanduser("~/.agency"))
     os.makedirs(state_dir, exist_ok=True)
     os.makedirs(os.path.join(state_dir, "keys"), exist_ok=True)
@@ -135,9 +180,10 @@ def init_command():
 
     # Re-entry behaviour
     if _phase1_complete(cfg, state_dir):
-        click.echo("Configuration found. Resuming from Phase 2.")
+        wiz_status("Configuration found. Resuming from Phase 2.")
         try:
-            _run_phase2(state_dir, toml_path, cfg)
+            _run_phase2(state_dir, toml_path, cfg, ctx, non_interactive,
+                        project_name, set_default, register_mcp, skip_primitives)
         except KeyboardInterrupt:
             click.echo(
                 "\n^C\nInterrupted. Run 'agency init' to resume "
@@ -145,21 +191,26 @@ def init_command():
             )
         return
 
-    # Show welcome banner for first run
-    click.echo(WELCOME_BANNER)
-    click.prompt("Press enter to begin, or Ctrl+C to exit", default="", show_default=False)
+    # Show welcome banner for first run (interactive only)
+    if not non_interactive:
+        click.echo(WELCOME_BANNER)
+        click.prompt("Press enter to begin, or Ctrl+C to exit", default="", show_default=False)
 
     # Phase 1
     try:
-        cfg = _run_phase1(state_dir, toml_path, cfg)
+        cfg = _run_phase1(state_dir, toml_path, cfg, ctx, non_interactive,
+                          backend, model, endpoint, api_key, email, timeout,
+                          oversight, attribution, smtp_host, smtp_port,
+                          smtp_username, smtp_password)
     except KeyboardInterrupt:
         click.echo("\n^C\nInterrupted. Run 'agency init' to resume.")
         return
 
     # Phase 1 exit prompt
-    click.echo("\n" + "=" * 64)
-    if not click.confirm("\nPhase 1 complete. Continue to Phase 2 now?", default=True):
-        click.echo("""
+    if not non_interactive:
+        click.echo("\n" + "=" * 64)
+        if not prompt_bool("Phase 1 complete. Continue to Phase 2 now?", default=True):
+            click.echo("""
 Setup is not yet complete.
 
 Run 'agency init' again to finish Phase 2, which will:
@@ -168,15 +219,17 @@ Run 'agency init' again to finish Phase 2, which will:
   - Install the starter primitive set
   - Create your first project
   - Create API tokens for your integrations
+  - Register with Claude Code
   - Install Claude Code skill (if Claude Code is present)
 
 When you are ready, run: agency init
 """)
-        return
+            return
 
     # Phase 2
     try:
-        _run_phase2(state_dir, toml_path, cfg)
+        _run_phase2(state_dir, toml_path, cfg, ctx, non_interactive,
+                    project_name, set_default, register_mcp, skip_primitives)
     except KeyboardInterrupt:
         click.echo(
             "\n^C\nInterrupted. Run 'agency init' to resume "
@@ -187,104 +240,100 @@ When you are ready, run: agency init
 # -- Phase 1 steps -------------------------------------------------------
 
 
-def _run_phase1(state_dir: str, toml_path: str, cfg: dict) -> dict:
-    """Run all 6 Phase 1 steps. Returns updated config dict."""
+def _run_phase1(state_dir: str, toml_path: str, cfg: dict,
+                ctx: click.Context, non_interactive: bool,
+                backend: str, model: str, endpoint: str, api_key: str,
+                email: str, timeout: int, oversight: str, attribution: str,
+                smtp_host, smtp_port, smtp_username, smtp_password) -> dict:
+    """Run all 5 Phase 1 steps. Returns updated config dict."""
     keys_dir = os.path.join(state_dir, "keys")
 
     # Step 1.1 -- Generate instance credentials
-    _step_header(1, 1, 6)
+    _step_header(1, 1, 5)
+    helper(SETTING_HELP["instance_credentials"])
     has_creds = (
         "instance_id" in cfg
         and os.path.exists(os.path.join(keys_dir, "agency.ed25519.pem"))
     )
     if has_creds:
-        click.echo("Instance credentials already configured.                        Skipping.")
+        wiz_status("Instance credentials already configured. Skipping.")
     else:
-        click.echo("Generating instance credentials...")
         cfg["instance_id"] = generate_uuid_v7()
         generate_keypair(
             os.path.join(keys_dir, "agency.ed25519.pem"),
             os.path.join(keys_dir, "agency.ed25519.pub.pem"),
         )
         _write_toml(cfg, toml_path)
-        click.echo("  Instance ID generated.                                              Done")
-        click.echo(f"  Signing keypair written to {keys_dir}/.                         Done")
+        wiz_status("Instance ID generated")
+        wiz_status(f"Signing keypair written to {keys_dir}/")
 
     # Step 1.2 -- Configure server settings
-    _step_header(1, 2, 6)
+    _step_header(1, 2, 5)
+    helper(SETTING_HELP["server_settings"])
     if "server" in cfg:
         host = cfg["server"].get("host", "127.0.0.1")
         port = cfg["server"].get("port", 8000)
-        click.echo(f"Server config already set ({host}:{port}).                     Skipping.")
+        wiz_status(f"Server config already set ({host}:{port}). Skipping.")
     else:
         cfg["server"] = {"host": "127.0.0.1", "port": 8000}
         _write_toml(cfg, toml_path)
-        click.echo("Writing server config (host: 127.0.0.1, port: 8000)...           Done")
+        wiz_status("Server config written (host: 127.0.0.1, port: 8000)")
 
     # Step 1.3 -- Configure LLM connection
-    _step_header(1, 3, 6)
+    _step_header(1, 3, 5)
+    helper(SETTING_HELP["llm_backend"])
     if "llm" in cfg:
-        click.echo(
+        wiz_status(
             f"LLM connection already configured "
-            f"({cfg['llm'].get('backend', '?')}).                  Skipping."
+            f"({cfg['llm'].get('backend', '?')}). Skipping."
         )
+    elif non_interactive and _is_flag_provided(ctx, "backend"):
+        cfg = _step_configure_llm_noninteractive(cfg, toml_path, backend, model, endpoint, api_key)
     else:
         cfg = _step_configure_llm(cfg, toml_path)
 
     # Step 1.4 -- Configure notifications
-    _step_header(1, 4, 6)
+    _step_header(1, 4, 5)
     if "notifications" in cfg:
-        click.echo("Notifications already configured.                               Skipping.")
+        wiz_status("Notifications already configured. Skipping.")
+    elif non_interactive:
+        cfg = _step_configure_notifications_noninteractive(
+            cfg, toml_path, email, timeout, oversight,
+            smtp_host, smtp_port, smtp_username, smtp_password,
+        )
     else:
         cfg = _step_configure_notifications(cfg, toml_path)
 
     # Step 1.5 -- Configure output defaults
-    _step_header(1, 5, 6)
-    click.echo(f"  → {FIELD_EXPLAINERS['attribution']}")
+    _step_header(1, 5, 5)
+    helper(SETTING_HELP["attribution"])
     if "output" in cfg:
         attr = "on" if cfg["output"].get("attribution", True) else "off"
-        click.echo(f"Output config already set (attribution: {attr}).                    Skipping.")
-    else:
-        cfg["output"] = {"attribution": True}
+        wiz_status(f"Output config already set (attribution: {attr}). Skipping.")
+    elif non_interactive and _is_flag_provided(ctx, "attribution"):
+        attr_val = attribution.lower() != "off"
+        cfg["output"] = {"attribution": attr_val}
         _write_toml(cfg, toml_path)
-        click.echo("Writing output config (attribution: on)...                        Done")
-
-    # Step 1.6 -- Register with Claude Code
-    _step_header(1, 6, 6)
-    claude_json = os.path.expanduser("~/.claude.json")
-    already_registered = False
-    if os.path.exists(claude_json):
-        try:
-            with open(claude_json) as f:
-                cj = json.load(f)
-            already_registered = "agency" in cj.get("mcpServers", {})
-        except Exception:
-            pass
-    if already_registered:
-        click.echo("Agency already registered in ~/.claude.json.             Skipping.")
+        wiz_status(f"Attribution {'enabled' if attr_val else 'disabled'}")
     else:
-        if click.confirm("Register Agency as an MCP server in Claude Code?", default=True):
-            _merge_mcp_registration(claude_json)
-        else:
-            click.echo(
-                "\nTo register manually, add the following to ~/.claude.json mcpServers:"
-            )
-            click.echo(
-                '  "agency": {"command": "agency", "args": ["mcp"], '
-                '"env": {"AGENCY_TOKEN_FILE": "~/.agency-mcp-token"}}'
-            )
+        attr_val = prompt_bool("Enable attribution?", default=True)
+        cfg["output"] = {"attribution": attr_val}
+        _write_toml(cfg, toml_path)
+        wiz_status(f"Attribution {'enabled' if attr_val else 'disabled'}")
 
     return cfg
 
 
 def _step_configure_llm(cfg: dict, toml_path: str) -> dict:
-    click.echo("How should Agency make its internal LLM calls?\n")
-    click.echo("  (1) Use Claude Code  (your existing subscription)")
-    click.echo("  (2) Use Anthropic API directly")
-    click.echo("  (3) Use another provider or local model")
-    choice = click.prompt("Select", default="1")
+    choice = prompt_choice(
+        "LLM backend",
+        ["Use Claude Code (your existing subscription)",
+         "Use Anthropic API directly",
+         "Use another provider or local model"],
+        "Use Claude Code (your existing subscription)",
+    )
 
-    if choice == "1":
+    if choice.startswith("Use Claude Code"):
         try:
             result = subprocess.run(
                 ["claude", "auth", "status"],
@@ -298,80 +347,111 @@ def _step_configure_llm(cfg: dict, toml_path: str) -> dict:
                     "api_key": "",
                 }
                 _write_toml(cfg, toml_path)
-                click.echo("Claude Code found and authenticated.                          Done")
+                wiz_status('LLM backend set to "claude-code" (model: claude-sonnet-4-6)')
             else:
-                click.echo(
-                    "Error: claude is installed but not authenticated.\n"
-                    "       Run: claude auth\n"
-                    "       Then re-run agency init."
-                )
+                wiz_status("claude is installed but not authenticated", success=False)
+                click.echo("       Run: claude auth")
+                click.echo("       Then re-run agency init.")
                 raise SystemExit(1)
         except FileNotFoundError:
-            click.echo(
-                "Error: claude CLI not found.\n"
-                "       Install Claude Code first, or select option 2 or 3.\n"
-                "       Then re-run agency init."
-            )
+            wiz_status("claude CLI not found", success=False)
+            click.echo("       Install Claude Code first, or select option 2 or 3.")
+            click.echo("       Then re-run agency init.")
             raise SystemExit(1)
-    elif choice == "2":
-        model = click.prompt("Model", default="claude-sonnet-4-6")
-        api_key = click.prompt("API key", hide_input=True)
+    elif choice.startswith("Use Anthropic API"):
+        mdl = wiz_prompt("Model", default="claude-sonnet-4-6")
+        ak = wiz_prompt("API key", hide_input=True)
         cfg["llm"] = {
             "backend": "api",
-            "model": model,
+            "model": mdl,
             "endpoint": "https://api.anthropic.com/v1",
-            "api_key": api_key,
+            "api_key": ak,
         }
         _write_toml(cfg, toml_path)
-        click.echo("LLM config written.                                               Done")
+        wiz_status('LLM backend set to "api"')
     else:
-        endpoint = click.prompt("Endpoint URL")
-        model = click.prompt("Model name")
-        api_key = click.prompt("API key", hide_input=True)
+        ep = wiz_prompt("Endpoint URL")
+        mdl = wiz_prompt("Model name")
+        ak = wiz_prompt("API key", hide_input=True)
         cfg["llm"] = {
             "backend": "other",
-            "model": model,
-            "endpoint": endpoint,
-            "api_key": api_key,
+            "model": mdl,
+            "endpoint": ep,
+            "api_key": ak,
         }
         _write_toml(cfg, toml_path)
-        click.echo("LLM config written.                                               Done")
+        wiz_status('LLM backend set to "other"')
 
     return cfg
 
 
+def _step_configure_llm_noninteractive(cfg: dict, toml_path: str,
+                                        backend: str, model: str,
+                                        endpoint: str, api_key: str) -> dict:
+    if backend == "claude-code":
+        cfg["llm"] = {
+            "backend": "claude-code",
+            "model": model,
+            "endpoint": "",
+            "api_key": "",
+        }
+    elif backend == "api":
+        cfg["llm"] = {
+            "backend": "api",
+            "model": model,
+            "endpoint": endpoint or "https://api.anthropic.com/v1",
+            "api_key": api_key,
+        }
+    else:
+        cfg["llm"] = {
+            "backend": backend,
+            "model": model,
+            "endpoint": endpoint,
+            "api_key": api_key,
+        }
+    _write_toml(cfg, toml_path)
+    wiz_status(f'LLM backend set to "{backend}" (model: {model})')
+    return cfg
+
+
 def _step_configure_notifications(cfg: dict, toml_path: str) -> dict:
-    click.echo("Configure notifications.\n")
-    click.echo(f"  → {FIELD_EXPLAINERS['contact_email']}")
-    contact_email = click.prompt("Contact email (Agency will notify this address)")
+    helper(SETTING_HELP["contact_email"])
+    contact_email = wiz_prompt("Contact email", default="")
+
+    helper(SETTING_HELP["error_notification_timeout"])
     while True:
-        timeout_raw = click.prompt(
-            "Error notification timeout in seconds [1800 = 30 minutes]", default="1800"
+        timeout_raw = wiz_prompt(
+            "Error notification timeout in seconds", default="1800"
         )
         try:
-            timeout = int(timeout_raw)
+            timeout_val = int(timeout_raw)
             break
         except ValueError:
             click.echo(f"  Please enter a number (seconds). Got: '{timeout_raw}'")
-    click.echo(f"  → {FIELD_EXPLAINERS['oversight_preference']}")
-    click.echo("When a task description is unclear, should Agency:")
-    click.echo("  (1) Use its discretion and proceed")
-    click.echo("  (2) Stop and wait for clarification")
-    oversight_choice = click.prompt("Select", default="1")
-    oversight = "discretion" if oversight_choice == "1" else "review"
+
+    helper(SETTING_HELP["oversight_preference"])
+    oversight = prompt_choice(
+        "Oversight preference",
+        ["discretion", "review"],
+        "discretion",
+    )
 
     cfg["notifications"] = {
         "contact_email": contact_email,
-        "error_notification_timeout": timeout,
+        "error_notification_timeout": timeout_val,
         "oversight_preference": oversight,
     }
     _write_toml(cfg, toml_path)
+    wiz_status(f'Contact email set to "{contact_email}"')
+    wiz_status(f"Error notification timeout set to {timeout_val} seconds")
+    wiz_status(f'Oversight preference set to "{oversight}"')
 
-    if click.confirm("\nConfigure SMTP to enable email sending?", default=False):
-        smtp_host = click.prompt("SMTP host")
-        smtp_port = int(click.prompt("SMTP port", default="587"))
-        smtp_user = click.prompt("SMTP username")
-        smtp_pass = click.prompt("SMTP password", hide_input=True)
+    helper(SETTING_HELP["smtp"])
+    if prompt_bool("Configure SMTP to enable email sending?", default=False):
+        smtp_host = wiz_prompt("SMTP host")
+        smtp_port = int(wiz_prompt("SMTP port", default="587"))
+        smtp_user = wiz_prompt("SMTP username")
+        smtp_pass = wiz_prompt("SMTP password", hide_input=True)
         cfg["smtp"] = {
             "host": smtp_host,
             "port": smtp_port,
@@ -380,16 +460,40 @@ def _step_configure_notifications(cfg: dict, toml_path: str) -> dict:
             "from_address": smtp_user,
         }
         _write_toml(cfg, toml_path)
-        if click.confirm(
-            f"Send a test email to {contact_email} to verify SMTP settings?",
-            default=True,
-        ):
-            click.echo("Test email sent successfully.                                  Done")
+        wiz_status("SMTP configured")
     else:
-        click.echo(
-            "Skipped. Agency will log errors but cannot send notification emails.\n"
-            "  Configure SMTP at any time with: agency client setup"
-        )
+        wiz_status("SMTP skipped — errors will be logged locally")
+
+    return cfg
+
+
+def _step_configure_notifications_noninteractive(
+    cfg: dict, toml_path: str,
+    email: str, timeout: int, oversight: str,
+    smtp_host, smtp_port, smtp_username, smtp_password,
+) -> dict:
+    cfg["notifications"] = {
+        "contact_email": email,
+        "error_notification_timeout": timeout,
+        "oversight_preference": oversight,
+    }
+    _write_toml(cfg, toml_path)
+    wiz_status(f'Contact email set to "{email}"')
+    wiz_status(f"Error notification timeout set to {timeout} seconds")
+    wiz_status(f'Oversight preference set to "{oversight}"')
+
+    if smtp_host is not None:
+        cfg["smtp"] = {
+            "host": smtp_host,
+            "port": smtp_port,
+            "username": smtp_username or "",
+            "password": smtp_password or "",
+            "from_address": smtp_username or "",
+        }
+        _write_toml(cfg, toml_path)
+        wiz_status("SMTP configured")
+    else:
+        wiz_status("SMTP skipped — errors will be logged locally")
 
     return cfg
 
@@ -421,10 +525,10 @@ def _merge_mcp_registration(claude_json: str):
     """Merge Agency MCP entry into ~/.claude.json (back up first)."""
     agency_bin = _resolve_agency_binary()
     if agency_bin is None:
-        click.echo(
-            "Could not find the agency binary. Ensure agency-engine is installed:\n"
-            "  pipx install agency-engine\n"
-            "Then re-run: agency init"
+        wiz_status(
+            "Could not find the agency binary. Ensure agency-engine is installed "
+            "(pipx install agency-engine). Then re-run: agency init",
+            success=False,
         )
         return
 
@@ -441,9 +545,10 @@ def _merge_mcp_registration(claude_json: str):
             with open(claude_json) as f:
                 data = json.load(f)
         except (json.JSONDecodeError, IOError):
-            click.echo(
-                "Error: ~/.claude.json is not valid JSON.\n"
-                "       Back up and fix the file, then re-run agency init."
+            wiz_status(
+                "~/.claude.json is not valid JSON. Back up and fix the file, "
+                "then re-run agency init.",
+                success=False,
             )
             return
     else:
@@ -454,24 +559,28 @@ def _merge_mcp_registration(claude_json: str):
         json.dump(data, f, indent=2)
 
     claude_json_abs = str(pathlib.Path(claude_json).resolve())
-    click.echo(f"MCP server registered in {claude_json_abs}")
-    click.echo(f'  Binary: {agency_bin}')
-    click.echo(f'  Args: ["mcp"]')
+    wiz_status(f"MCP server registered in {claude_json_abs}")
 
 
 # -- Phase 2 steps -------------------------------------------------------
 
 
-def _run_phase2(state_dir: str, toml_path: str, cfg: dict):
-    """Run all 6 Phase 2 steps."""
+def _run_phase2(state_dir: str, toml_path: str, cfg: dict,
+                ctx: click.Context, non_interactive: bool,
+                project_name, set_default, register_mcp, skip_primitives):
+    """Run all 7 Phase 2 steps.
+
+    Step ordering: MCP registration (2.6) is AFTER token creation (2.5).
+    """
     db_path = os.path.join(state_dir, "agency.db")
     skipped = []
     failed = []
 
     # Step 2.1 -- Initialise database
-    _step_header(2, 1, 6)
+    _step_header(2, 1, 7)
+    helper(SETTING_HELP["database_init"])
     if is_schema_current(db_path):
-        click.echo("Database already initialised.                            Skipping.")
+        wiz_status("Database already initialised. Skipping.")
     else:
         try:
             _step_init_database(state_dir, cfg)
@@ -479,51 +588,64 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict):
             failed.append(f"Database initialisation: {e}")
 
     # Step 2.2 -- Download embedding model
-    _step_header(2, 2, 6)
+    _step_header(2, 2, 7)
+    helper(SETTING_HELP["embedding_model"])
     if _embedding_model_cached():
-        click.echo("Embedding model already downloaded.                           Skipping.")
+        wiz_status("Embedding model already downloaded. Skipping.")
     else:
         try:
             _step_download_embedding_model()
         except Exception as e:
             failed.append(f"Embedding model download: {e}")
 
-    # Step 2.3 -- Install starter primitives
-    _step_header(2, 3, 6)
-    try:
-        conn = sqlite3.connect(db_path)
-        run_migrations(conn)
-        prim_count = conn.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
-        conn.close()
-    except Exception as e:
-        failed.append(f"Primitive check: {e}")
-        prim_count = -1
-    if prim_count > 0:
-        click.echo(
-            f"Primitives already installed ({prim_count} role components)."
-            "                  Skipping."
-        )
+    # Step 2.3 -- Install starter primitives (auto-download on first install)
+    _step_header(2, 3, 7)
+    if skip_primitives:
+        wiz_status("Primitive download skipped (--skip-primitives)")
+        skipped.append("Primitive installation   ->  agency primitives update")
     else:
-        if click.confirm(
-            "No primitives found. Install the Agency starter primitive set?",
-            default=True,
-        ):
+        try:
+            conn = sqlite3.connect(db_path)
+            run_migrations(conn)
+            prim_count = conn.execute("SELECT COUNT(*) FROM role_components").fetchone()[0]
+            conn.close()
+        except Exception as e:
+            failed.append(f"Primitive check: {e}")
+            prim_count = -1
+        if prim_count > 0:
+            wiz_status(
+                f"Primitives already installed ({prim_count} role components). Skipping."
+            )
+        elif prim_count == 0:
+            # First install: auto-download without prompting
             try:
                 _step_install_primitives(db_path, cfg.get("instance_id", ""))
             except Exception as e:
                 failed.append(f"Primitive installation: {e}")
-        else:
-            click.echo(
-                "Skipped. Agency will start with an empty primitive store.\n"
-                "  Install at any time: agency primitives update"
-            )
-            skipped.append("Primitive installation   ->  agency primitives update")
+        # prim_count == -1 means check failed; already recorded in failed list
 
     # Step 2.4 -- Create first project
-    _step_header(2, 4, 6)
+    _step_header(2, 4, 7)
+    helper(SETTING_HELP["project_name"])
     proj_configured = _project_already_configured(toml_path, db_path)
     if proj_configured:
-        click.echo("Default project already configured.      Skipping.")
+        wiz_status("Default project already configured. Skipping.")
+    elif non_interactive and project_name is not None:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            from agency.cli.project import run_project_create_wizard
+
+            run_project_create_wizard(state_dir, conn, toml_path,
+                                      project_name=project_name,
+                                      set_default=set_default)
+            conn.close()
+        except Exception as e:
+            failed.append(f"Project creation: {e}")
+            skipped.append("Default project          ->  agency project create")
+    elif non_interactive and project_name is None:
+        wiz_status("No --project-name provided. Skipping project creation.")
+        skipped.append("Default project          ->  agency project create")
     else:
         try:
             conn = sqlite3.connect(db_path)
@@ -537,34 +659,63 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict):
             skipped.append("Default project          ->  agency project create")
 
     # Step 2.5 -- Create integration tokens
-    _step_header(2, 5, 6)
+    _step_header(2, 5, 7)
+    helper(SETTING_HELP["integration_tokens"])
     _step_create_integration_tokens(db_path, state_dir, toml_path, skipped, failed)
 
-    # Step 2.6 -- Install Claude Code skill
-    _step_header(2, 6, 6)
+    # Step 2.6 -- Register with Claude Code (AFTER token creation)
+    _step_header(2, 6, 7)
+    helper(SETTING_HELP["register_mcp"])
+    claude_json = os.path.expanduser("~/.claude.json")
+    already_registered = False
+    if os.path.exists(claude_json):
+        try:
+            with open(claude_json) as f:
+                cj = json.load(f)
+            already_registered = "agency" in cj.get("mcpServers", {})
+        except Exception:
+            pass
+    if already_registered:
+        wiz_status("Agency already registered in ~/.claude.json. Skipping.")
+    elif non_interactive:
+        if register_mcp:
+            _merge_mcp_registration(claude_json)
+        else:
+            wiz_status("MCP registration skipped (--no-register-mcp)")
+    else:
+        if prompt_bool("Register Agency as an MCP server in Claude Code?", default=True):
+            _merge_mcp_registration(claude_json)
+        else:
+            click.echo(
+                "\nTo register manually, add the following to ~/.claude.json mcpServers:"
+            )
+            click.echo(
+                '  "agency": {"command": "agency", "args": ["mcp"], '
+                '"env": {"AGENCY_TOKEN_FILE": "~/.agency-mcp-token"}}'
+            )
+
+    # Step 2.7 -- Install Claude Code skill
+    _step_header(2, 7, 7)
     claude_dir = os.path.expanduser("~/.claude")
     if not os.path.isdir(claude_dir):
-        click.echo("~/.claude not found — skipping skill installation.")
+        wiz_status("~/.claude not found — skipping skill installation.", success=False)
     else:
         try:
             from agency.cli.skills import _install_skill, BUNDLED_SKILLS
 
             skills_dir = os.path.join(claude_dir, "skills")
             os.makedirs(skills_dir, exist_ok=True)
-            click.echo("Installing Claude Code skill...")
             for skill_name in BUNDLED_SKILLS:
-                status = _install_skill(skill_name, skills_dir)
-                if status == "already_current":
-                    click.echo(
-                        "  Claude Code skill already current."
-                        "                             Skipping."
-                    )
+                install_status = _install_skill(skill_name, skills_dir)
+                if install_status == "already_current":
+                    wiz_status("Claude Code skill already current. Skipping.")
                 else:
-                    click.echo(f"  {skill_name:<50} Done")
+                    wiz_status(f"Claude Code skill installed ({skill_name})")
         except Exception as e:
-            click.echo(
-                f"Error: Could not write to ~/.claude/skills/ ({e}).\n"
-                "  Install manually: agency skills install"
+            wiz_status(
+                f"Could not write to ~/.claude/skills/ ({e}). "
+                "Install manually: agency skills install",
+                success=False,
             )
 
     # Phase 2 completion
@@ -581,12 +732,14 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict):
         click.echo("\nSetup complete with skipped steps.\n\nSkipped:")
         for s in skipped:
             click.echo(f"  - {s}")
-        click.echo("\nStart the server:    agency serve")
+        click.echo(
+            "\nAgency will start automatically when you use it in Claude Code."
+        )
     else:
         click.echo(
             "\nSetup complete. Agency is ready to use.\n\n"
-            "Start the server:    agency serve\n"
-            "Then open Claude Code — Agency tools will be available automatically."
+            "Agency will start automatically when you use it in Claude Code.\n"
+            'Open Claude Code and try: "Use agency_assign to help me with this task."'
         )
 
 
@@ -599,8 +752,7 @@ def _step_init_database(state_dir: str, cfg: dict):
     port = server.get("port", 8000)
     base_url = f"http://{host}:{port}"
 
-    click.echo("Initialising database...")
-    click.echo("  Starting server...", nl=False)
+    wiz_status("Starting server...")
     proc = subprocess.Popen(
         ["agency", "serve"],
         env={**os.environ, "AGENCY_STATE_DIR": state_dir},
@@ -612,15 +764,13 @@ def _step_init_database(state_dir: str, cfg: dict):
         except subprocess.TimeoutExpired:
             proc.kill()
         raise RuntimeError("Server started but did not become ready in time.")
-    click.echo("                                                    Done")
-    click.echo("  Schema ready.                                                         Done")
-    click.echo("  Stopping server...", nl=False)
+    wiz_status("Schema ready")
     proc.terminate()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-    click.echo("                                                    Done")
+    wiz_status("Server stopped")
 
 
 def _embedding_model_cached() -> bool:
@@ -635,29 +785,29 @@ def _embedding_model_cached() -> bool:
 
 
 def _step_download_embedding_model():
-    click.echo("Downloading embedding model (all-MiniLM-L6-v2, ~80MB)...")
+    wiz_status("Downloading embedding model (all-MiniLM-L6-v2, ~80MB)...")
     from sentence_transformers import SentenceTransformer
 
     SentenceTransformer("all-MiniLM-L6-v2")
-    click.echo("Embedding model downloaded.                                    Done")
+    wiz_status("Embedding model downloaded")
 
 
 def _step_install_primitives(db_path: str, instance_id: str):
     from agency.cli.primitives import STARTER_CSV_URL, _fetch_csv, install_from_csv
 
-    click.echo("Fetching starter primitives from GitHub...")
+    wiz_status("Downloading starter primitives from GitHub...")
     try:
         rows = _fetch_csv(STARTER_CSV_URL)
     except Exception as e:
-        click.echo(f"Error: Could not reach GitHub: {e}")
+        wiz_status(f"Could not reach GitHub: {e}", success=False)
         click.echo("Install later: agency primitives update")
         return
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    inserted, skipped = install_from_csv(rows, conn, instance_id)
+    inserted, skip_count = install_from_csv(rows, conn, instance_id)
     conn.close()
-    click.echo(f"{inserted} primitives installed.                                       Done")
+    wiz_status(f"{inserted} starter primitives installed")
 
 
 def _project_already_configured(toml_path: str, db_path: str) -> bool:
@@ -698,11 +848,6 @@ def _step_create_integration_tokens(
         ("Superpowers", "superpowers", os.path.expanduser("~/.agency-superpowers-token")),
         ("Workgraph", "workgraph", os.path.expanduser("~/.agency-workgraph-token")),
     ]
-    click.echo("Select integrations to create tokens for.")
-    click.echo(
-        "(For now, all are created by default. "
-        "Use 'agency token revoke' to remove if not needed.)\n"
-    )
 
     try:
         with open(toml_path, "rb") as f:
@@ -733,9 +878,7 @@ def _step_create_integration_tokens(
                 file_exists = bool(fh.read().strip())
 
         if existing_rows and file_exists:
-            click.echo(
-                f"  {name:<40}                                   Already set up. Skipping."
-            )
+            wiz_status(f"{name} token already set up. Skipping.")
             continue
 
         if existing_rows and not file_exists:
@@ -745,9 +888,7 @@ def _step_create_integration_tokens(
                 (client_id,),
             )
             conn.commit()
-            click.echo(
-                f"  {name:<40}                                   Token file missing -- recovering..."
-            )
+            wiz_status(f"{name} token file missing — recovering...")
 
         # Create a new token (fresh install or recovery)
         try:
@@ -756,10 +897,7 @@ def _step_create_integration_tokens(
             insert_token(conn, jti=jti, client_id=client_id, expires_at=None)
             with open(token_path, "w") as f:
                 f.write(token)
-            click.echo(
-                f"  {name:<40}                                   Created\n"
-                f"  Token written to {token_path}"
-            )
+            wiz_status(f"{name} token created")
         except Exception as e:
             failed.append(f"{name} token: {e}")
 

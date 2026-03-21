@@ -1,5 +1,11 @@
 import json
+import logging
+import os
 import sqlite3
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
 from agency.db.primitives import find_similar
 from agency.db.compositions import upsert_agent
 from agency.db.templates import list_templates
@@ -8,10 +14,19 @@ from agency.engine.constants import (
     METAPRIMITIVE_SIMILARITY_THRESHOLD,
     POOL_COVERAGE_WARNING_THRESHOLD,
     SKILL_TAG_BOOST_FACTOR,
+    ASSIGNER_STRATEGY_KEY,
+    ASSIGNER_STRATEGY_EMBEDDING,
+    ASSIGNER_STRATEGY_LLM,
+    ASSIGNER_LLM_MODEL,
+    ASSIGNER_LLM_TIMEOUT,
+    ASSIGNER_LLM_MAX_RETRIES,
+    ASSIGNER_FALLBACK_LOG,
 )
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
 from agency.utils.errors import PrimitiveStoreEmpty
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_skill_boost(results: list[dict], skills: list[str] | None) -> None:
@@ -30,47 +45,291 @@ def _apply_relevance_floor(results: list[dict]) -> list[dict]:
     return [r for r in results if r.get("similarity", 0) >= METAPRIMITIVE_SIMILARITY_THRESHOLD]
 
 
+def _log_fallback(task_id: str, failure_mode: str, slot_affected: str, detail: str) -> None:
+    """Log an LLM-path fallback event to the fallback log file (§4.4.3c)."""
+    log_path = Path(os.path.expanduser(ASSIGNER_FALLBACK_LOG))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "task_id": task_id,
+        "failure_mode": failure_mode,
+        "slot_affected": slot_affected,
+        "detail": detail,
+        "strategy_used": "embedding",
+    }
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _render_functional_agent_prompt(
+    metaprimitives: list[dict],
+    task_description: str,
+    skills: list[str] | None,
+    role_candidates: list[dict],
+    outcome_candidates: list[dict],
+    tradeoff_candidates: list[dict],
+    max_role_components: int = 3,
+    max_desired_outcomes: int = 1,
+    max_trade_off_configs: int = 1,
+) -> str:
+    """Render the functional agent Jinja2 template for the LLM assigner call."""
+    from jinja2 import Environment, FileSystemLoader
+
+    template_dir = Path(__file__).parent / "templates"
+    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    template = env.get_template("functional_agent.jinja2")
+    return template.render(
+        metaprimitives=metaprimitives,
+        task_description=task_description,
+        skills=skills,
+        role_candidates=role_candidates,
+        outcome_candidates=outcome_candidates,
+        tradeoff_candidates=tradeoff_candidates,
+        max_role_components=max_role_components,
+        max_desired_outcomes=max_desired_outcomes,
+        max_trade_off_configs=max_trade_off_configs,
+    )
+
+
+def _validate_llm_selections(
+    selections: dict,
+    role_candidate_ids: set[str],
+    outcome_candidate_ids: set[str],
+    tradeoff_candidate_ids: set[str],
+    task_id: str,
+) -> dict:
+    """Validate LLM selections against candidate lists.
+
+    Returns validated selections dict. Hallucinated IDs are removed and
+    logged; affected slots fall back to embedding path (returned as empty
+    lists so the caller can detect and substitute).
+    """
+    validated = {}
+    slot_map = {
+        "role_components": role_candidate_ids,
+        "desired_outcomes": outcome_candidate_ids,
+        "trade_off_configs": tradeoff_candidate_ids,
+    }
+    for slot_name, valid_ids in slot_map.items():
+        raw = selections.get(slot_name, [])
+        valid = []
+        for item in raw:
+            item_id = item.get("id", "") if isinstance(item, dict) else str(item)
+            if item_id in valid_ids:
+                valid.append(item)
+            else:
+                _log_fallback(
+                    task_id, "hallucinated_id", slot_name,
+                    f"ID {item_id} not in candidate list",
+                )
+        validated[slot_name] = valid
+    return validated
+
+
+def _assign_via_llm(
+    db: sqlite3.Connection,
+    task_id: str,
+    task_description: str,
+    skills: list[str] | None,
+) -> dict | None:
+    """Attempt LLM-based primitive selection (§4.4.3).
+
+    Returns a dict with 'selections', 'fitness_verdict',
+    'pool_coverage_warning', and 'task_classification' on success.
+    Returns None on unrecoverable failure (caller should use embedding path).
+    """
+    # 1. Load metaprimitives
+    try:
+        metaprimitives = find_similar(
+            db, "role_components", task_description,
+            limit=10, scope="meta:assigner",
+        )
+    except Exception:
+        metaprimitives = []
+
+    # Also load meta desired_outcomes and trade_off_configs
+    for table in ("desired_outcomes", "trade_off_configs"):
+        try:
+            meta = find_similar(db, table, task_description, limit=10, scope="meta:assigner")
+            metaprimitives.extend(meta)
+        except Exception:
+            pass
+
+    # Format metaprimitives for the template
+    mp_formatted = []
+    for mp in metaprimitives:
+        mp_formatted.append({
+            "type": mp.get("type", "unknown"),
+            "name": mp.get("name", mp.get("id", "unnamed")),
+            "description": mp.get("description", ""),
+        })
+
+    # 2. Get top-20 candidates per slot
+    role_candidates = find_similar(db, "role_components", task_description, limit=20, scope="task")
+    outcome_candidates = find_similar(db, "desired_outcomes", task_description, limit=20, scope="task")
+    tradeoff_candidates = find_similar(db, "trade_off_configs", task_description, limit=20, scope="task")
+
+    role_candidate_ids = {r["id"] for r in role_candidates}
+    outcome_candidate_ids = {r["id"] for r in outcome_candidates}
+    tradeoff_candidate_ids = {r["id"] for r in tradeoff_candidates}
+
+    # 3. Render the functional agent prompt
+    prompt = _render_functional_agent_prompt(
+        metaprimitives=mp_formatted,
+        task_description=task_description,
+        skills=skills,
+        role_candidates=role_candidates,
+        outcome_candidates=outcome_candidates,
+        tradeoff_candidates=tradeoff_candidates,
+    )
+
+    # 4. LLM call with retry
+    retries = ASSIGNER_LLM_MAX_RETRIES + 1  # 1 initial + retries
+    last_error = None
+
+    for attempt in range(retries):
+        try:
+            result = subprocess.run(
+                ["claude", "--print", "--model", ASSIGNER_LLM_MODEL, "--output-format", "json"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=ASSIGNER_LLM_TIMEOUT,
+            )
+            if result.returncode != 0:
+                _log_fallback(task_id, "api_error", "all", f"claude exit code {result.returncode}: {result.stderr[:200]}")
+                return None
+
+            parsed = json.loads(result.stdout)
+
+            # 5. Validate selections
+            selections = parsed.get("selections", {})
+            validated = _validate_llm_selections(
+                selections,
+                role_candidate_ids,
+                outcome_candidate_ids,
+                tradeoff_candidate_ids,
+                task_id,
+            )
+
+            return {
+                "selections": validated,
+                "fitness_verdict": parsed.get("fitness_verdict", "marginal"),
+                "pool_coverage_warning": parsed.get("pool_coverage_warning", False),
+                "task_classification": parsed.get("task_classification", ""),
+                "notes": parsed.get("notes", ""),
+                # Pass candidates through for embedding fallback on empty slots
+                "_role_candidates": role_candidates,
+                "_outcome_candidates": outcome_candidates,
+                "_tradeoff_candidates": tradeoff_candidates,
+            }
+
+        except subprocess.TimeoutExpired:
+            _log_fallback(task_id, "timeout", "all", f"LLM call timed out after {ASSIGNER_LLM_TIMEOUT}s")
+            return None
+        except json.JSONDecodeError as e:
+            last_error = str(e)
+            if attempt < retries - 1:
+                logger.debug("LLM JSON parse failure (attempt %d), retrying", attempt + 1)
+                continue
+            _log_fallback(task_id, "parse", "all", f"JSON parse failure after {retries} attempts: {last_error}")
+            return None
+        except (OSError, subprocess.SubprocessError) as e:
+            _log_fallback(task_id, "api_error", "all", str(e))
+            return None
+
+    return None
+
+
+def _assign_via_embedding(
+    db: sqlite3.Connection, task_id: str, task: dict,
+    skills: list[str] | None = None,
+) -> tuple:
+    """Run the embedding-based assignment path. Returns (role_results,
+    outcome_results, tradeoff_results) after boost and floor."""
+    task_description = task.get("task_description", "")
+
+    role_results = find_similar(db, "role_components", task_description, limit=3)
+    if not role_results:
+        raise PrimitiveStoreEmpty("No role components in primitive store")
+    _apply_skill_boost(role_results, skills)
+    role_results = _apply_relevance_floor(role_results)
+
+    outcome_results = find_similar(db, "desired_outcomes", task_description, limit=1)
+    _apply_skill_boost(outcome_results, skills)
+    outcome_results = _apply_relevance_floor(outcome_results)
+
+    tradeoff_results = find_similar(db, "trade_off_configs", task_description, limit=1)
+    _apply_skill_boost(tradeoff_results, skills)
+    tradeoff_results = _apply_relevance_floor(tradeoff_results)
+
+    return role_results, outcome_results, tradeoff_results
+
+
 def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
                  cfg: dict | None = None, skills: list[str] | None = None) -> dict:
     """
     Find or compose the best agent for a task.
 
-    Strategy:
-    1. Search role_components for relevant primitives
-    2. Apply skill tag boost (§4.4.2b) and relevance floor (§4.4.2a)
-    3. Search desired_outcomes and trade_off_configs
-    4. Upsert agent composition (deduped by content hash)
-    5. Render agent prompt using default template
-    6. Return composition_fitness metadata (§4.4.2c)
+    Strategy is determined by cfg['assigner']['strategy']:
+    - 'embedding' (default): deterministic embedding-similarity path (§4.4.2)
+    - 'llm': LLM-based selection with embedding fallback (§4.4.3)
     """
     task_description = task.get("task_description", "")
     instance_id = task.get("instance_id", "default")
     client_id = task.get("client_id")
     project_id = task.get("project_id")
 
-    # Find relevant role components
-    role_results = find_similar(db, "role_components", task_description, limit=3)
-    if not role_results:
-        raise PrimitiveStoreEmpty("No role components in primitive store")
+    # Read strategy from feature flag (§4.4.1)
+    strategy = ASSIGNER_STRATEGY_EMBEDDING
+    if cfg:
+        strategy = cfg.get("assigner", {}).get(ASSIGNER_STRATEGY_KEY, ASSIGNER_STRATEGY_EMBEDDING)
 
-    # Skill tag boost then relevance floor
-    _apply_skill_boost(role_results, skills)
-    role_results = _apply_relevance_floor(role_results)
+    llm_result = None
+    if strategy == ASSIGNER_STRATEGY_LLM:
+        llm_result = _assign_via_llm(db, task_id, task_description, skills)
+
+    if llm_result is not None:
+        # Use LLM selections, with per-slot embedding fallback for empty slots
+        selections = llm_result["selections"]
+
+        # Extract selected IDs and descriptions from LLM output
+        role_ids = [s["id"] if isinstance(s, dict) else s for s in selections.get("role_components", [])]
+        outcome_ids = [s["id"] if isinstance(s, dict) else s for s in selections.get("desired_outcomes", [])]
+        tradeoff_ids = [s["id"] if isinstance(s, dict) else s for s in selections.get("trade_off_configs", [])]
+
+        # Build lookup maps from candidates
+        role_map = {r["id"]: r for r in llm_result["_role_candidates"]}
+        outcome_map = {r["id"]: r for r in llm_result["_outcome_candidates"]}
+        tradeoff_map = {r["id"]: r for r in llm_result["_tradeoff_candidates"]}
+
+        # Build result lists from LLM selections
+        role_results = [role_map[rid] for rid in role_ids if rid in role_map]
+        outcome_results = [outcome_map[oid] for oid in outcome_ids if oid in outcome_map]
+        tradeoff_results = [tradeoff_map[tid] for tid in tradeoff_ids if tid in tradeoff_map]
+
+        # Per-slot embedding fallback for empty slots (hallucinated IDs were stripped)
+        if not role_results:
+            emb_role, _, _ = _assign_via_embedding(db, task_id, task, skills)
+            role_results = emb_role
+        if not outcome_results:
+            _, emb_out, _ = _assign_via_embedding(db, task_id, task, skills)
+            outcome_results = emb_out
+        if not tradeoff_results:
+            _, _, emb_tc = _assign_via_embedding(db, task_id, task, skills)
+            tradeoff_results = emb_tc
+    else:
+        # Full embedding path
+        role_results, outcome_results, tradeoff_results = _assign_via_embedding(
+            db, task_id, task, skills,
+        )
 
     role_component_ids = [r["id"] for r in role_results]
     role_component_texts = [r["description"] for r in role_results]
 
-    # Find best desired outcome
-    outcome_results = find_similar(db, "desired_outcomes", task_description, limit=1)
-    _apply_skill_boost(outcome_results, skills)
-    outcome_results = _apply_relevance_floor(outcome_results)
     desired_outcome = outcome_results[0]["description"] if outcome_results else "Complete the task effectively"
     desired_outcome_id = outcome_results[0]["id"] if outcome_results else None
 
-    # Find best trade-off config
-    tradeoff_results = find_similar(db, "trade_off_configs", task_description, limit=1)
-    _apply_skill_boost(tradeoff_results, skills)
-    tradeoff_results = _apply_relevance_floor(tradeoff_results)
     trade_off_config = tradeoff_results[0]["description"] if tradeoff_results else "Balance quality and speed"
     trade_off_config_id = tradeoff_results[0]["id"] if tradeoff_results else None
 
@@ -125,28 +384,51 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
     else:
         mean_embedding = []
 
-    # Composition fitness metadata (§4.4.2c)
+    # Composition fitness metadata (§4.4.2c / §4.4.3)
     all_selected = role_results + outcome_results + tradeoff_results
-    composition_fitness = {
-        "per_primitive_similarity": {
-            r["id"]: round(r.get("similarity", 0), 4)
-            for r in all_selected if r.get("id")
-        },
-        "pool_coverage_warning": not any(
-            r.get("similarity", 0) >= POOL_COVERAGE_WARNING_THRESHOLD
-            for r in all_selected
-        ),
-        "slots_filled": {
-            "role_components": len(role_component_ids),
-            "desired_outcomes": 1 if desired_outcome_id else 0,
-            "trade_off_configs": 1 if trade_off_config_id else 0,
-        },
-        "slots_empty": {
-            "role_components": max(0, 3 - len(role_component_ids)),
-            "desired_outcomes": 0 if desired_outcome_id else 1,
-            "trade_off_configs": 0 if trade_off_config_id else 1,
-        },
-    }
+
+    if llm_result is not None:
+        # LLM path: use the LLM's fitness verdict and pool coverage warning
+        composition_fitness = {
+            "per_primitive_similarity": {
+                r["id"]: round(r.get("similarity", 0), 4)
+                for r in all_selected if r.get("id")
+            },
+            "pool_coverage_warning": llm_result.get("pool_coverage_warning", False),
+            "fitness_verdict": llm_result.get("fitness_verdict", "marginal"),
+            "task_classification": llm_result.get("task_classification", ""),
+            "slots_filled": {
+                "role_components": len(role_component_ids),
+                "desired_outcomes": 1 if desired_outcome_id else 0,
+                "trade_off_configs": 1 if trade_off_config_id else 0,
+            },
+            "slots_empty": {
+                "role_components": max(0, 3 - len(role_component_ids)),
+                "desired_outcomes": 0 if desired_outcome_id else 1,
+                "trade_off_configs": 0 if trade_off_config_id else 1,
+            },
+        }
+    else:
+        composition_fitness = {
+            "per_primitive_similarity": {
+                r["id"]: round(r.get("similarity", 0), 4)
+                for r in all_selected if r.get("id")
+            },
+            "pool_coverage_warning": not any(
+                r.get("similarity", 0) >= POOL_COVERAGE_WARNING_THRESHOLD
+                for r in all_selected
+            ),
+            "slots_filled": {
+                "role_components": len(role_component_ids),
+                "desired_outcomes": 1 if desired_outcome_id else 0,
+                "trade_off_configs": 1 if trade_off_config_id else 0,
+            },
+            "slots_empty": {
+                "role_components": max(0, 3 - len(role_component_ids)),
+                "desired_outcomes": 0 if desired_outcome_id else 1,
+                "trade_off_configs": 0 if trade_off_config_id else 1,
+            },
+        }
 
     return {
         "agent_id": agent_id,
