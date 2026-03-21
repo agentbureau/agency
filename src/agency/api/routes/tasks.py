@@ -34,7 +34,10 @@ def get_task_agent(task_id: str, request: Request):
     # Normalize: assign_agent expects task_description; SQLite stores as description
     task_for_assigner = {**task, "task_description": task.get("description", "")}
     try:
-        result = assign_agent(request.app.state.db, task_id, task_for_assigner)
+        result = assign_agent(
+            request.app.state.db, task_id, task_for_assigner,
+            cfg=getattr(request.app.state, 'config', {}),
+        )
     except PrimitiveStoreEmpty:
         _notify_empty_primitives(request, task.get("project_id"))
         raise HTTPException(

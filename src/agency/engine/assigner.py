@@ -4,20 +4,44 @@ from agency.db.primitives import find_similar
 from agency.db.compositions import upsert_agent
 from agency.db.templates import list_templates
 from agency.engine.renderer import render_agent, load_default_template
+from agency.engine.constants import (
+    METAPRIMITIVE_SIMILARITY_THRESHOLD,
+    POOL_COVERAGE_WARNING_THRESHOLD,
+    SKILL_TAG_BOOST_FACTOR,
+)
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
 from agency.utils.errors import PrimitiveStoreEmpty
 
 
-def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
+def _apply_skill_boost(results: list[dict], skills: list[str] | None) -> None:
+    """Boost similarity scores for primitives matching skill tags (§4.4.2b)."""
+    if not skills:
+        return
+    for r in results:
+        desc_lower = r["description"].lower()
+        if any(tag.lower() in desc_lower for tag in skills):
+            r["similarity"] = min(r["similarity"] * SKILL_TAG_BOOST_FACTOR, 1.0)
+    results.sort(key=lambda r: r["similarity"], reverse=True)
+
+
+def _apply_relevance_floor(results: list[dict]) -> list[dict]:
+    """Filter primitives below the similarity threshold (§4.4.2a)."""
+    return [r for r in results if r.get("similarity", 0) >= METAPRIMITIVE_SIMILARITY_THRESHOLD]
+
+
+def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
+                 cfg: dict | None = None, skills: list[str] | None = None) -> dict:
     """
     Find or compose the best agent for a task.
 
     Strategy:
     1. Search role_components for relevant primitives
-    2. Search desired_outcomes and trade_off_configs
-    3. Upsert agent composition (deduped by content hash)
-    4. Render agent prompt using default template
+    2. Apply skill tag boost (§4.4.2b) and relevance floor (§4.4.2a)
+    3. Search desired_outcomes and trade_off_configs
+    4. Upsert agent composition (deduped by content hash)
+    5. Render agent prompt using default template
+    6. Return composition_fitness metadata (§4.4.2c)
     """
     task_description = task.get("task_description", "")
     instance_id = task.get("instance_id", "default")
@@ -28,16 +52,25 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
     role_results = find_similar(db, "role_components", task_description, limit=3)
     if not role_results:
         raise PrimitiveStoreEmpty("No role components in primitive store")
+
+    # Skill tag boost then relevance floor
+    _apply_skill_boost(role_results, skills)
+    role_results = _apply_relevance_floor(role_results)
+
     role_component_ids = [r["id"] for r in role_results]
     role_component_texts = [r["description"] for r in role_results]
 
     # Find best desired outcome
     outcome_results = find_similar(db, "desired_outcomes", task_description, limit=1)
+    _apply_skill_boost(outcome_results, skills)
+    outcome_results = _apply_relevance_floor(outcome_results)
     desired_outcome = outcome_results[0]["description"] if outcome_results else "Complete the task effectively"
     desired_outcome_id = outcome_results[0]["id"] if outcome_results else None
 
     # Find best trade-off config
     tradeoff_results = find_similar(db, "trade_off_configs", task_description, limit=1)
+    _apply_skill_boost(tradeoff_results, skills)
+    tradeoff_results = _apply_relevance_floor(tradeoff_results)
     trade_off_config = tradeoff_results[0]["description"] if tradeoff_results else "Balance quality and speed"
     trade_off_config_id = tradeoff_results[0]["id"] if tradeoff_results else None
 
@@ -92,6 +125,29 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
     else:
         mean_embedding = []
 
+    # Composition fitness metadata (§4.4.2c)
+    all_selected = role_results + outcome_results + tradeoff_results
+    composition_fitness = {
+        "per_primitive_similarity": {
+            r["id"]: round(r.get("similarity", 0), 4)
+            for r in all_selected if r.get("id")
+        },
+        "pool_coverage_warning": not any(
+            r.get("similarity", 0) >= POOL_COVERAGE_WARNING_THRESHOLD
+            for r in all_selected
+        ),
+        "slots_filled": {
+            "role_components": len(role_component_ids),
+            "desired_outcomes": 1 if desired_outcome_id else 0,
+            "trade_off_configs": 1 if trade_off_config_id else 0,
+        },
+        "slots_empty": {
+            "role_components": max(0, 3 - len(role_component_ids)),
+            "desired_outcomes": 0 if desired_outcome_id else 1,
+            "trade_off_configs": 0 if trade_off_config_id else 1,
+        },
+    }
+
     return {
         "agent_id": agent_id,
         "content_hash": composition_hash,
@@ -103,6 +159,7 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict) -> dict:
             "desired_outcomes": [desired_outcome_id] if desired_outcome_id else [],
             "trade_off_configs": [trade_off_config_id] if trade_off_config_id else [],
         },
+        "composition_fitness": composition_fitness,
     }
 
 
@@ -144,7 +201,10 @@ def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
             enriched += " " + " ".join(task.skills)
         if task.deliverables:
             enriched += " " + " ".join(task.deliverables)
-        result = assign_agent(db, task.external_id or enriched[:16], {"task_description": enriched})
+        result = assign_agent(
+            db, task.external_id or enriched[:16], {"task_description": enriched},
+            cfg=cfg, skills=task.skills if hasattr(task, 'skills') else None,
+        )
         results.append(result)
 
     class Comp:
@@ -168,7 +228,7 @@ def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
             "template_id": canonical["template_id"],
             "primitive_ids": canonical["primitive_ids"],
             "agent_id": canonical["agent_id"],
-            "composition_fitness": None,  # populated by Track C1
+            "composition_fitness": canonical.get("composition_fitness"),
         }
 
         for idx in cluster:
