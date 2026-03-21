@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agency-engine"
-version = "1.2.2"
+version = "1.2.3"
 # No 3.13-specific features found (no match/case, ExceptionGroup, type statement).
 # tomllib (used in config/toml.py) is available since 3.11. Keeping >=3.13 for
 # torch/sentence-transformers ecosystem stability per PRD §2.2 investigation.

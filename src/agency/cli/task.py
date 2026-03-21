@@ -1,4 +1,4 @@
-"""CLI task commands for Agency v1.2.2.
+"""CLI task commands for Agency v1.2.3.
 
 agency task assign   — compose agents for tasks
 agency task evaluator — get evaluator prompt + callback JWT
