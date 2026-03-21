@@ -37,11 +37,8 @@ def insert_primitive(
     scope: str = "task",
 ) -> str:
     assert table in PRIMITIVE_TABLES
-    if scope not in _VALID_SCOPES:
-        raise ValueError(
-            f"Invalid scope '{scope}'. "
-            f"Allowed values: {', '.join(sorted(_VALID_SCOPES))}"
-        )
+    if not scope or scope not in _VALID_SCOPES:
+        scope = "task"
     pid = new_uuid()
     hash_ = content_hash(description)
     vec = embed(description)

@@ -92,12 +92,13 @@ def test_insert_primitive_defaults_to_task_scope(db):
     assert p["scope"] == "task"
 
 
-def test_insert_primitive_rejects_invalid_scope(db):
-    with pytest.raises(ValueError, match="Invalid scope"):
-        insert_primitive(db, "role_components",
-            description="bad scope test",
-            instance_id="i1",
-            scope="invalid")
+def test_insert_primitive_defaults_invalid_scope_to_task(db):
+    pid = insert_primitive(db, "role_components",
+        description="bad scope test",
+        instance_id="i1",
+        scope="invalid")
+    row = db.execute("SELECT scope FROM role_components WHERE id = ?", (pid,)).fetchone()
+    assert row[0] == "task"
 
 
 def test_find_similar_returns_similarity_key(db):
