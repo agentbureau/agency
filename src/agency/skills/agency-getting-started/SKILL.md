@@ -28,7 +28,7 @@ Display this to the user, then wait for their input:
 
 > Now try it with something you actually need done. Describe your task and I'll send it to Agency's assigner, just like I did with the sample. Be as detailed as possible about what output you want.
 >
-> Just type: "Claude, please use Agency to compose an agent to do X"
+> Just type: "Claude, please use Agency to compose an agent to do [your task]. I would like the output to look like [describe the output]."
 
 When the user provides their task:
 

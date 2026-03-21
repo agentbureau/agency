@@ -1,14 +1,44 @@
 """MCP auto-start utilities for zero-terminal Agency operation."""
+import pathlib
 import shutil
 import subprocess
+import sys
 import time
 
 import httpx
 
 
 def _resolve_agency_binary() -> str | None:
-    """Find the agency binary on PATH. Returns path or None."""
-    return shutil.which("agency")
+    """Resolve the absolute path to the agency binary.
+
+    Resolution order:
+    1. Sibling of current Python executable (same venv/pipx env)
+    2. ~/.local/bin/agency (pipx default)
+    3. {sys.prefix}/bin/agency (current venv)
+    4. shutil.which fallback (PATH search)
+    """
+    # 1. Same installation as the running process
+    exe_dir = pathlib.Path(sys.executable).resolve().parent
+    sibling = exe_dir / "agency"
+    if sibling.is_file() and sibling.stat().st_mode & 0o111:
+        return str(sibling)
+
+    # 2. pipx default location
+    pipx_path = pathlib.Path.home() / ".local" / "bin" / "agency"
+    if pipx_path.is_file() and pipx_path.stat().st_mode & 0o111:
+        return str(pipx_path.resolve())
+
+    # 3. Current venv
+    venv_path = pathlib.Path(sys.prefix) / "bin" / "agency"
+    if venv_path.is_file() and venv_path.stat().st_mode & 0o111:
+        return str(venv_path.resolve())
+
+    # 4. PATH fallback
+    found = shutil.which("agency")
+    if found:
+        return str(pathlib.Path(found).resolve())
+
+    return None
 
 
 def _poll_health(
