@@ -161,9 +161,10 @@ def test_init_phase1_shows_field_explainers(tmp_path, monkeypatch):
     ])
     result = runner.invoke(init_command, input=inputs)
     from agency.cli.init import FIELD_EXPLAINERS
-    assert FIELD_EXPLAINERS["contact_email"] in result.output
-    assert FIELD_EXPLAINERS["oversight_preference"] in result.output
-    assert FIELD_EXPLAINERS["attribution"] in result.output
+    # helper() indents each line by 4 spaces, so check first line of each explainer
+    for key in ("contact_email", "oversight_preference", "attribution"):
+        first_line = FIELD_EXPLAINERS[key].splitlines()[0]
+        assert first_line in result.output, f"Missing explainer for {key}"
 
 
 def test_poll_health_uses_half_second_interval():
