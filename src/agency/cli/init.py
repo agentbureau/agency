@@ -741,13 +741,12 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict,
         for s in skipped:
             click.echo(f"  - {s}")
         click.echo(
-            "\nAgency will start automatically when you use it in Claude Code."
+            "\nTo get started with Agency, inside Claude Code use the skill /agency-getting-started."
         )
     else:
         click.echo(
             "\nSetup complete. Agency is ready to use.\n\n"
-            "Agency will start automatically when you use it in Claude Code.\n"
-            'Open Claude Code and try: "Use agency_assign to help me with this task."'
+            "To get started with Agency, inside Claude Code use the skill /agency-getting-started."
         )
 
 
