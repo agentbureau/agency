@@ -179,6 +179,36 @@ def _connection_error(base_url: str) -> str:
     ))
 
 
+def _maybe_inject_onboarding(result_json: str) -> str:
+    """Inject first_run_onboarding field if marker file does not exist.
+
+    Called on successful agency_assign and agency_status responses.
+    Creates the marker after first injection so the field appears only once.
+    """
+    state_dir = os.environ.get("AGENCY_STATE_DIR", os.path.expanduser("~/.agency"))
+    marker_path = pathlib.Path(state_dir) / ".onboarded"
+    if marker_path.exists():
+        return result_json
+    try:
+        data = json.loads(result_json)
+        data["first_run_onboarding"] = {
+            "message": (
+                "Agency is set up and working. Would you like a quick "
+                "walkthrough of how to use it?"
+            ),
+            "skill_name": "getting-started-with-agency",
+            "skip_instruction": (
+                "To skip, just proceed with your task. "
+                "This message won't appear again."
+            ),
+        }
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.touch()
+        return json.dumps(data)
+    except (json.JSONDecodeError, OSError):
+        return result_json
+
+
 def _detect_default_source() -> str:
     """Determine how the default project ID is currently resolved."""
     repo_config = _find_repo_config()
@@ -849,6 +879,15 @@ async def _run_mcp_server():
                 code=None,
                 message=f"Unknown tool: {name}",
             ))
+
+        # Inject first-run onboarding on successful assign/status responses
+        if name in ("agency_assign", "agency_status"):
+            try:
+                parsed = json.loads(result)
+                if parsed.get("status") != "error":
+                    result = _maybe_inject_onboarding(result)
+            except (json.JSONDecodeError, KeyError):
+                pass
 
         return [types.TextContent(type="text", text=result)]
 
