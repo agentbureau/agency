@@ -5,16 +5,26 @@ build-backend = "hatchling.build"
 [project]
 name = "agency-engine"
 version = "1.2.3"
-# No 3.13-specific features found (no match/case, ExceptionGroup, type statement).
-# tomllib (used in config/toml.py) is available since 3.11. Keeping >=3.13 for
-# torch/sentence-transformers ecosystem stability per PRD §2.2 investigation.
+description = "Compose, assign, evaluate, and evolve AI agents from reusable primitives."
+readme = "README.md"
+license = "Elastic-2.0"
 requires-python = ">=3.13"
+authors = [
+    { name = "Vaughn Tan", email = "me@vaughntan.org" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "cryptography>=42.0",
     "pyjwt>=2.4.0",
-    "mcp==1.26.0",
+    "mcp~=1.26.0",
     "sentence-transformers>=3.0",
     "sqlite-vec>=0.1",
     "httpx>=0.27",
@@ -25,12 +35,20 @@ dependencies = [
     "watchdog>=3.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/agentbureau/agency"
+Documentation = "https://github.com/agentbureau/agency/blob/main/specification.md"
+Repository = "https://github.com/agentbureau/agency"
+Issues = "https://github.com/agentbureau/agency/issues"
+Author = "https://github.com/arbois"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "hypothesis>=6.0",
     "httpx>=0.27",
+    "respx>=0.21",
 ]
 
 [project.scripts]
