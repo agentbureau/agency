@@ -43,7 +43,7 @@ def create_adjacent_agent(
         desc = row[0]
         candidates = [
             r for r in find_similar(db, "role_components", desc, limit=5)
-            if r["id"] != rid and r["score"] >= similarity_threshold
+            if r["id"] != rid and r["similarity"] >= similarity_threshold
         ]
         if candidates:
             adjacent_ids.append(candidates[0]["id"])

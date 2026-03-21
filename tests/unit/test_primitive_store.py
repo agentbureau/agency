@@ -73,3 +73,98 @@ def test_assign_agent_returns_embedding_vector(db_with_primitives):
     assert "embedding_vector" in result
     assert isinstance(result["embedding_vector"], list)
     assert len(result["embedding_vector"]) > 0
+
+
+def test_insert_primitive_accepts_scope_parameter(db):
+    pid = insert_primitive(db, "role_components",
+        description="meta: evaluate agent composition quality",
+        instance_id="i1",
+        scope="meta:assigner")
+    p = get_primitive(db, "role_components", pid)
+    assert p["scope"] == "meta:assigner"
+
+
+def test_insert_primitive_defaults_to_task_scope(db):
+    pid = insert_primitive(db, "role_components",
+        description="write structured reports",
+        instance_id="i1")
+    p = get_primitive(db, "role_components", pid)
+    assert p["scope"] == "task"
+
+
+def test_insert_primitive_rejects_invalid_scope(db):
+    with pytest.raises(ValueError, match="Invalid scope"):
+        insert_primitive(db, "role_components",
+            description="bad scope test",
+            instance_id="i1",
+            scope="invalid")
+
+
+def test_find_similar_returns_similarity_key(db):
+    """Return dict uses 'similarity' not 'score'."""
+    insert_primitive(db, "role_components",
+        description="evaluate task quality", instance_id="i1")
+    results = find_similar(db, "role_components", query="evaluate quality", limit=1)
+    assert len(results) >= 1
+    assert "similarity" in results[0]
+    assert "score" not in results[0]
+
+
+def test_find_similar_returns_name_field(db):
+    """Return dict includes 'name' field."""
+    insert_primitive(db, "role_components",
+        description="evaluate task quality", instance_id="i1",
+        name="Quality evaluator")
+    results = find_similar(db, "role_components", query="evaluate quality", limit=1)
+    assert results[0]["name"] == "Quality evaluator"
+
+
+def test_find_similar_filters_by_scope(db):
+    """Scope filter excludes primitives with different scope."""
+    insert_primitive(db, "role_components",
+        description="task-scoped role component for testing",
+        instance_id="i1", scope="task")
+    insert_primitive(db, "role_components",
+        description="meta-scoped assigner role component",
+        instance_id="i1", scope="meta:assigner")
+    task_results = find_similar(db, "role_components",
+        query="role component", limit=10, scope="task")
+    meta_results = find_similar(db, "role_components",
+        query="role component", limit=10, scope="meta:assigner")
+
+    task_ids = {r["id"] for r in task_results}
+    meta_ids = {r["id"] for r in meta_results}
+    assert task_ids.isdisjoint(meta_ids)
+
+
+def test_find_similar_scope_none_returns_all(db):
+    """scope=None searches across all scopes."""
+    insert_primitive(db, "role_components",
+        description="task-scoped for none test",
+        instance_id="i1", scope="task")
+    insert_primitive(db, "role_components",
+        description="meta-scoped for none test",
+        instance_id="i1", scope="meta:assigner")
+    all_results = find_similar(db, "role_components",
+        query="none test", limit=10, scope=None)
+    assert len(all_results) >= 2
+
+
+def test_find_similar_default_scope_is_task(db):
+    """Default scope='task' — existing callers get same behaviour."""
+    insert_primitive(db, "role_components",
+        description="default scope check item",
+        instance_id="i1")
+    insert_primitive(db, "role_components",
+        description="meta scope check item",
+        instance_id="i1", scope="meta:assigner")
+    results = find_similar(db, "role_components",
+        query="scope check item", limit=10)
+    scopes_returned = set()
+    for r in results:
+        if "default scope" in r["description"]:
+            scopes_returned.add("task")
+        if "meta scope" in r["description"]:
+            scopes_returned.add("meta")
+    assert "task" in scopes_returned
+    assert "meta" not in scopes_returned

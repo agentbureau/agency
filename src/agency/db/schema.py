@@ -195,3 +195,34 @@ def fix_v123_persistence_bugs(conn: sqlite3.Connection) -> None:
         WHERE destination = 'agency_instance'
           AND confirmed = 0
     """)
+
+
+@migration
+def add_scope_column(conn: sqlite3.Connection) -> None:
+    """Add scope column to all three primitive tables and recreate the primitives view."""
+    conn.executescript("""
+        ALTER TABLE role_components ADD COLUMN scope TEXT NOT NULL DEFAULT 'task';
+        ALTER TABLE desired_outcomes ADD COLUMN scope TEXT NOT NULL DEFAULT 'task';
+        ALTER TABLE trade_off_configs ADD COLUMN scope TEXT NOT NULL DEFAULT 'task';
+
+        DROP VIEW IF EXISTS primitives;
+
+        CREATE VIEW primitives AS
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, 'role_component' AS primitive_type
+            FROM role_components
+        UNION ALL
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, NULL AS override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, 'desired_outcome'
+            FROM desired_outcomes
+        UNION ALL
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, NULL AS override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, 'trade_off_config'
+            FROM trade_off_configs;
+    """)
