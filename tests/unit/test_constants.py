@@ -3,12 +3,12 @@
 
 def test_metaprimitive_similarity_threshold():
     from agency.engine.constants import METAPRIMITIVE_SIMILARITY_THRESHOLD
-    assert METAPRIMITIVE_SIMILARITY_THRESHOLD == 0.5
+    assert METAPRIMITIVE_SIMILARITY_THRESHOLD == 0.35
 
 
 def test_pool_coverage_warning_threshold():
     from agency.engine.constants import POOL_COVERAGE_WARNING_THRESHOLD
-    assert POOL_COVERAGE_WARNING_THRESHOLD == 0.6
+    assert POOL_COVERAGE_WARNING_THRESHOLD == 0.45
 
 
 def test_find_similar_similarity_key():

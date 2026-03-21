@@ -279,6 +279,11 @@ def _run_phase1(state_dir: str, toml_path: str, cfg: dict,
         _write_toml(cfg, toml_path)
         wiz_status("Server config written (host: 127.0.0.1, port: 8000)")
 
+    if "assigner" not in cfg:
+        cfg["assigner"] = {"strategy": "embedding"}
+        _write_toml(cfg, toml_path)
+        wiz_status("Assigner config written (strategy: embedding)")
+
     # Step 1.3 -- Configure LLM connection
     _step_header(1, 3, 5)
     helper(SETTING_HELP["llm_backend"])

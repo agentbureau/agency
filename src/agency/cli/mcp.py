@@ -260,7 +260,9 @@ def _ensure_server(base_url: str) -> None:
     """Start Agency server if not reachable. Registers cleanup on exit."""
     global _server_proc
     if _server_proc is not None:
-        return  # Already spawned by us
+        if _server_proc.poll() is None:
+            return  # Still running
+        _server_proc = None  # Exited — fall through to restart
 
     from urllib.parse import urlparse
 
@@ -573,6 +575,11 @@ def _tool_agency_status(
         if resp.status_code == 200:
             data = resp.json()
 
+            # Compact summary when no project_id — strip active_tasks
+            if not project_id:
+                for proj in data.get("projects", []):
+                    proj.pop("active_tasks", None)
+
             # Count assigned tasks across all projects
             assigned_count = 0
             for proj in data.get("projects", []):
@@ -855,6 +862,12 @@ async def _run_mcp_server():
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
+        # Pre-dispatch health check — restart server if it died mid-session
+        if not _check_health(base_url):
+            _ensure_server(base_url)
+            if not _check_health(base_url):
+                return [types.TextContent(type="text", text=_connection_error(base_url))]
+
         if name == "agency_assign":
             result = _tool_agency_assign(
                 base_url,

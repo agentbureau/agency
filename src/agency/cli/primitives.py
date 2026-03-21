@@ -54,7 +54,7 @@ def _get_existing_by_hash(conn: sqlite3.Connection) -> dict[str, dict]:
     existing = {}
     for table in PRIMITIVE_TABLES:
         rows = conn.execute(
-            f"SELECT content_hash, quality, domain_specificity, domain FROM {table}"
+            f"SELECT content_hash, quality, domain_specificity, domain, scope FROM {table}"
         ).fetchall()
         for row in rows:
             existing[row[0]] = {
@@ -62,6 +62,7 @@ def _get_existing_by_hash(conn: sqlite3.Connection) -> dict[str, dict]:
                 "quality": row[1],
                 "domain_specificity": row[2],
                 "domain": row[3],
+                "scope": row[4],
             }
     return existing
 
@@ -134,7 +135,9 @@ def install_from_csv(
             domain=domain_json,
             origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
             parent_content_hash=row.get("parent_content_hash") or None,
+            scope=row.get("scope", "task"),
         )
+        existing[chash] = {"table": table}  # Prevent duplicate insert within same batch
         inserted += 1
 
     return inserted, skipped
@@ -176,6 +179,7 @@ def reconcile_from_csv(
                 domain=domain_json,
                 origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
                 parent_content_hash=row.get("parent_content_hash") or None,
+                scope=row.get("scope", "task"),
             )
             stats["new"] += 1
         else:
@@ -211,6 +215,18 @@ def reconcile_from_csv(
                 conn.execute(
                     f"UPDATE {local['table']} SET domain = ? WHERE content_hash = ?",
                     (domain_json, chash),
+                )
+                stats["fields_changed"] += 1
+                changed = True
+
+            csv_scope = row.get("scope", "task")
+            if local.get("scope", "task") != csv_scope:
+                _record_mutation(conn, chash, "scope",
+                                 local.get("scope", "task"), csv_scope,
+                                 AGENTBUREAU_INSTANCE_ID)
+                conn.execute(
+                    f"UPDATE {local['table']} SET scope = ? WHERE content_hash = ?",
+                    (csv_scope, chash),
                 )
                 stats["fields_changed"] += 1
                 changed = True

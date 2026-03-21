@@ -75,13 +75,15 @@ def _make_error(
     }
 
 
-def _assign_success(task_ids: list, assignments: dict, agents: dict) -> dict:
-    return {
+def _assign_success(task_ids: list, assignments: dict, agents: dict, **extra) -> dict:
+    result = {
         "status": "ok",
         "task_ids": task_ids,
         "assignments": assignments,
         "agents": agents,
     }
+    result.update(extra)
+    return result
 
 
 def _evaluator_success(
@@ -269,10 +271,13 @@ def assign(
                 }
                 for ext_id, assignment in data.get("assignments", {}).items()
             ]
+            extra = {k: v for k, v in data.items()
+                     if k not in ("assignments", "agents")}
             return _assign_success(
                 task_ids=task_ids,
                 assignments=data.get("assignments", {}),
                 agents=data.get("agents", {}),
+                **extra,
             )
         if resp.status_code == 503:
             return _make_error(

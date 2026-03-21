@@ -10,11 +10,11 @@ and G without cross-track dependencies.
 
 # Relevance floor: primitives below this cosine similarity are excluded
 # from composition slots (§4.4.2a).
-METAPRIMITIVE_SIMILARITY_THRESHOLD: float = 0.5
+METAPRIMITIVE_SIMILARITY_THRESHOLD: float = 0.35
 
 # Pool coverage warning: if no primitive in any slot exceeds this,
 # composition_fitness.pool_coverage_warning is True (§4.4.2c).
-POOL_COVERAGE_WARNING_THRESHOLD: float = 0.6
+POOL_COVERAGE_WARNING_THRESHOLD: float = 0.45
 
 # Return key name for cosine similarity in find_similar() results.
 FIND_SIMILAR_SIMILARITY_KEY: str = "similarity"
