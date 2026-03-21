@@ -21,12 +21,16 @@ def _state_dir() -> Path:
 
 
 def run_project_create_wizard(
-    state_dir: str, conn: sqlite3.Connection, toml_path: str
+    state_dir: str, conn: sqlite3.Connection, toml_path: str,
+    project_name: str | None = None, set_default: bool | None = None,
 ) -> str:
     """Interactive wizard that creates a project. Returns the new project UUID.
 
     Reusable — called by both ``project_create_command`` and ``agency init``.
+    When project_name is provided, runs non-interactively with instance defaults.
     """
+    non_interactive = project_name is not None
+
     # Load instance defaults from agency.toml
     cfg = load_config(toml_path)
     notifications = cfg.get("notifications", {})
@@ -37,99 +41,109 @@ def run_project_create_wizard(
     inst_timeout = notifications.get("error_notification_timeout", 1800)
     inst_attribution = output.get("attribution", True)
 
-    click.echo("\nCreate a new Agency project.\n")
-
-    # --- Project name (required) ---
-    name = click.prompt("Project name")
+    if non_interactive:
+        name = project_name
+    else:
+        click.echo("\nCreate a new Agency project.\n")
+        name = click.prompt("Project name")
 
     # --- Inheritable fields (empty = inherit = NULL) ---
-    click.echo(
-        "\nThe following settings inherit from your instance defaults.\n"
-        "Press enter to accept each default, or type a new value."
-    )
-
-    raw_email = click.prompt(
-        f"  Contact email [{inst_email}]", default="", show_default=False
-    )
-    contact_email = raw_email.strip() or None
-
-    raw_oversight = click.prompt(
-        f"  Oversight preference [{inst_oversight}]", default="", show_default=False
-    )
-    oversight_preference = raw_oversight.strip() or None
-    if oversight_preference and oversight_preference not in (
-        "discretion",
-        "review",
-    ):
+    if non_interactive:
+        contact_email = None
+        oversight_preference = None
+        error_notification_timeout = None
+        attribution = None
+        llm_provider = None
+        llm_model = None
+        llm_api_key = None
+    else:
         click.echo(
-            f"  Warning: '{oversight_preference}' is not a standard value "
-            "(discretion/review). Storing as-is."
+            "\nThe following settings inherit from your instance defaults.\n"
+            "Press enter to accept each default, or type a new value."
         )
 
-    raw_timeout = click.prompt(
-        f"  Error notification timeout (seconds) [{inst_timeout}]",
-        default="",
-        show_default=False,
-    )
-    error_notification_timeout = int(raw_timeout) if raw_timeout.strip() else None
+        raw_email = click.prompt(
+            f"  Contact email [{inst_email}]", default="", show_default=False
+        )
+        contact_email = raw_email.strip() or None
 
-    raw_attr = click.prompt(
-        f"  Attribution [{'on' if inst_attribution else 'off'}]",
-        default="",
-        show_default=False,
-    )
-    if raw_attr.strip().lower() in ("true", "1", "yes"):
-        attribution = 1
-    elif raw_attr.strip().lower() in ("false", "0", "no"):
-        attribution = 0
-    elif raw_attr.strip() == "":
-        attribution = None
-    else:
-        click.echo(f"  Unrecognised value '{raw_attr}'; treating as inherit.")
-        attribution = None
-
-    # --- Optional LLM override ---
-    llm_section = cfg.get("llm", {})
-    inst_backend = llm_section.get("backend", "claude-code")
-    inst_model = llm_section.get("model", "")
-
-    llm_provider = None
-    llm_model = None
-    llm_api_key = None
-    if click.confirm("\nOverride LLM settings for this project?", default=False):
-        if inst_backend == "claude-code":
-            raw_provider = click.prompt(
-                f"  LLM provider [claude-code]", default="", show_default=False
+        raw_oversight = click.prompt(
+            f"  Oversight preference [{inst_oversight}]", default="", show_default=False
+        )
+        oversight_preference = raw_oversight.strip() or None
+        if oversight_preference and oversight_preference not in (
+            "discretion",
+            "review",
+        ):
+            click.echo(
+                f"  Warning: '{oversight_preference}' is not a standard value "
+                "(discretion/review). Storing as-is."
             )
-            llm_provider = raw_provider.strip() or None
-            raw_model = click.prompt(
-                f"  Model [{inst_model}]", default="", show_default=False
-            )
-            llm_model = raw_model.strip() or None
-            if llm_provider and llm_provider not in ("claude-code",):
-                raw_key = click.prompt("  API key", default="", show_default=False)
-                llm_api_key = raw_key.strip() or None
+
+        raw_timeout = click.prompt(
+            f"  Error notification timeout (seconds) [{inst_timeout}]",
+            default="",
+            show_default=False,
+        )
+        error_notification_timeout = int(raw_timeout) if raw_timeout.strip() else None
+
+        raw_attr = click.prompt(
+            f"  Attribution [{'on' if inst_attribution else 'off'}]",
+            default="",
+            show_default=False,
+        )
+        if raw_attr.strip().lower() in ("true", "1", "yes"):
+            attribution = 1
+        elif raw_attr.strip().lower() in ("false", "0", "no"):
+            attribution = 0
+        elif raw_attr.strip() == "":
+            attribution = None
         else:
-            raw_provider = click.prompt(
-                f"  LLM provider [{inst_backend}]", default="", show_default=False
-            )
-            if raw_provider.strip() == "claude-code":
-                click.echo(
-                    "  Error: claude-code is an instance-level backend only; "
-                    "not valid at project level."
+            click.echo(f"  Unrecognised value '{raw_attr}'; treating as inherit.")
+            attribution = None
+
+        # --- Optional LLM override ---
+        llm_section = cfg.get("llm", {})
+        inst_backend = llm_section.get("backend", "claude-code")
+        inst_model = llm_section.get("model", "")
+
+        llm_provider = None
+        llm_model = None
+        llm_api_key = None
+        if click.confirm("\nOverride LLM settings for this project?", default=False):
+            if inst_backend == "claude-code":
+                raw_provider = click.prompt(
+                    f"  LLM provider [claude-code]", default="", show_default=False
                 )
-                raise SystemExit(1)
-            llm_provider = raw_provider.strip() or None
-            raw_model = click.prompt(
-                f"  Model [{inst_model}]", default="", show_default=False
-            )
-            llm_model = raw_model.strip() or None
-            raw_key = click.prompt(
-                "  API key (leave blank to inherit instance key)",
-                default="",
-                show_default=False,
-            )
-            llm_api_key = raw_key.strip() or None
+                llm_provider = raw_provider.strip() or None
+                raw_model = click.prompt(
+                    f"  Model [{inst_model}]", default="", show_default=False
+                )
+                llm_model = raw_model.strip() or None
+                if llm_provider and llm_provider not in ("claude-code",):
+                    raw_key = click.prompt("  API key", default="", show_default=False)
+                    llm_api_key = raw_key.strip() or None
+            else:
+                raw_provider = click.prompt(
+                    f"  LLM provider [{inst_backend}]", default="", show_default=False
+                )
+                if raw_provider.strip() == "claude-code":
+                    click.echo(
+                        "  Error: claude-code is an instance-level backend only; "
+                        "not valid at project level."
+                    )
+                    raise SystemExit(1)
+                llm_provider = raw_provider.strip() or None
+                raw_model = click.prompt(
+                    f"  Model [{inst_model}]", default="", show_default=False
+                )
+                llm_model = raw_model.strip() or None
+                raw_key = click.prompt(
+                    "  API key (leave blank to inherit instance key)",
+                    default="",
+                    show_default=False,
+                )
+                llm_api_key = raw_key.strip() or None
 
     # --- Insert into DB ---
     project_id = create_project(
@@ -151,7 +165,11 @@ def run_project_create_wizard(
     click.echo(f"  ID: {project_id}")
 
     # --- Optionally set as default project ---
-    if click.confirm("\nSet as default project for this Agency instance?", default=False):
+    if non_interactive:
+        if set_default:
+            _set_default_project_in_toml(toml_path, project_id)
+            click.echo(f"  Default project set to {project_id} in agency.toml")
+    elif click.confirm("\nSet as default project for this Agency instance?", default=False):
         _set_default_project_in_toml(toml_path, project_id)
         click.echo(f"  Default project set to {project_id} in agency.toml")
 

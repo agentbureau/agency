@@ -706,8 +706,8 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict,
     _step_header(2, 7, 7)
     claude_dir = os.path.expanduser("~/.claude")
     if not os.path.isdir(claude_dir):
-        wiz_status("~/.claude not found — skipping skill installation.", success=False)
-    else:
+        os.makedirs(claude_dir, exist_ok=True)
+    if True:
         try:
             from agency.cli.skills import _install_skill, BUNDLED_SKILLS
 

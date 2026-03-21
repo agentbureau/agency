@@ -6,7 +6,11 @@ import shutil
 import click
 
 
-BUNDLED_SKILLS = ["agency-primitive-extraction"]
+BUNDLED_SKILLS = [
+    "agency-primitive-extraction",
+    "getting-started-with-agency",
+    "agency-composition-config",
+]
 
 
 def _bundled_skill_path(skill_name: str) -> str:
