@@ -1,6 +1,17 @@
 # Agency — specification v1.2.3
 *2026-03-22*
 
+## Getting started
+
+Install Agency, then run the setup wizard:
+
+```bash
+pipx install --python python3.13 agency-engine
+agency init
+```
+
+Once setup completes, open Claude Code and use the skill `/agency-getting-started` for an interactive walkthrough of the Agency workflow: composing agents, executing tasks, and submitting evaluations.
+
 ---
 
 ## Purpose and scope
