@@ -32,7 +32,10 @@ The underlying model draws on [research into how high-performing R&D teams struc
 
 ```bash
 # Install (pipx recommended — keeps agency on PATH across sessions)
-pipx install agency-engine
+pipx install --python python3.13 agency-engine
+
+# If the PyPI release is behind, install directly from GitHub:
+# pipx install --python python3.13 git+https://github.com/agentbureau/agency.git
 
 # If you use pip instead, the command is only available while the venv is active
 # pip install agency-engine
@@ -47,6 +50,12 @@ agency serve
 curl http://127.0.0.1:8000/health
 # Returns: {"status": "ok", "version": "<your installed version>"}
 ```
+
+> **Requires Python 3.13+.** If `pipx` was installed with an older Python
+> (common with Homebrew), the `--python python3.13` flag tells pipx to use
+> the correct interpreter. Run `python3.13 --version` to check it is
+> available. If not, install it: `brew install python@3.13` (macOS) or
+> see https://www.python.org/downloads/.
 
 ## Integration guides
 
