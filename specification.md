@@ -1,5 +1,5 @@
-# Agency — specification v1.2.2
-*2026-03-18*
+# Agency — specification v1.2.3
+*2026-03-22*
 
 ---
 
@@ -12,6 +12,8 @@ Agency does not execute tasks. It composes and assigns agent descriptions; the t
 v1.2.0 adds native MCP integration for Claude Code, Ed25519 authentication, token management, the permission model, a two-phase setup wizard, instance/project configuration hierarchy, agent output attribution, primitive quality scores and distribution, and SMTP error notification.
 
 v1.2.2 adds CLI task commands (`agency task {assign,evaluator,submit,get}`), a shared client module, a new `GET /tasks/{task_id}` API endpoint with re-rendering pipeline, the `agency_get_task` MCP tool, `error_type` in all error responses, `task_ids` summary block in assign responses, and `status: "ok"` across all success responses.
+
+v1.2.3 adds the metaprimitives architecture (scope column, composition config, dual-path assigner with embedding default and LLM path behind feature flag), a lightweight triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive flags for `agency init` and `agency client setup`, first-run onboarding, three-layer typography for the setup wizard, critical persistence bug fixes (composition FK and evaluation confirmation), two new bundled skills (`getting-started-with-agency`, `agency-composition-config`), and 7 starter assigner metaprimitives.
 
 ---
 
@@ -29,6 +31,26 @@ These are stored as independent, uncommitted objects. Pre-composed agents are a 
 
 Each primitive carries a quality score (integer, 0-100). The assigner only selects primitives with quality > 90 for new compositions. Quality scores are set at primitive creation time and updated by `agency primitives update` from the upstream starter CSV.
 
+### Metaprimitives
+
+A metaprimitive is a primitive composed into one of Agency's functional agents (assigner, evaluator, evolver, agent creator) — governing how Agency itself operates, as distinct from task primitives composed into requester-facing agents.
+
+Metaprimitives live in the same three primitive tables as task primitives. The `scope` column distinguishes them. Values: `task` (default), `meta:assigner`, `meta:evaluator`, `meta:evolver`, `meta:agent_creator`. The assigner queries only `scope = 'task'` primitives when composing task agents, and only `scope = 'meta:assigner'` primitives when composing its own functional behaviour.
+
+v1.2.3 ships 7 starter assigner metaprimitives covering task-type classification, fitness verification, skill tag utilisation, relevance flooring, coverage gap signalling, and bypass governance.
+
+### Composition config
+
+`~/.agency/composition-rules.csv` governs how functional agents are composed. It contains natural language rules matched by embedding similarity against incoming task descriptions and agent-type context.
+
+**CSV columns:** `agent_type`, `rule`, `max_role_components`, `max_desired_outcomes`, `max_trade_off_configs`, `all_projects`, `project_ids`.
+
+The composition config is a **watched file**: changes are detected at runtime and take effect on the next `agency_assign` call without server restart.
+
+### Triage
+
+A lightweight, stateless, read-only check (`POST /triage`) that returns the best-matching primitives for a task description without performing full composition. Used to decide whether composition adds value before paying its cost. See the Triage endpoint section under Integration surface.
+
 ### Agents and actor-agents
 
 An **agent** is a composition of role components + desired outcomes + trade-off configuration. It is a deployable configuration that may exist in the composition cache without being assigned to any task.
@@ -37,7 +59,7 @@ An **actor-agent** is an agent that has been assigned to a specific task and is 
 
 ### Self-similar system
 
-All special-type agents — assigner, evaluator, evolver, agent creator — are first-class agents governed by the same primitive structure as every other agent. None are privileged system components. All accumulate performance history and are subject to selection pressure.
+All special-type agents — assigner, evaluator, evolver, agent creator — are first-class agents governed by the same primitive structure as every other agent. None are privileged system components. All accumulate performance history and are subject to selection pressure. Functional agents are composed from metaprimitives (primitives with `scope = 'meta:<agent_type>'`), selected via the composition config CSV.
 
 ### Batch assignment
 
@@ -74,6 +96,7 @@ Each primitive record stores:
 | `quality` | Integer 0-100 — selection eligibility threshold (> 90 required) |
 | `domain_specificity` | Integer 0-100 — how domain-specific this primitive is |
 | `domain` | JSON array of strings (e.g. `["research","writing"]`) — empty array means domain-neutral |
+| `scope` | `task` (default), `meta:assigner`, `meta:evaluator`, `meta:evolver`, or `meta:agent_creator` — selection boundary between task primitives and metaprimitives |
 | `origin_instance_id` | UUID of the instance that created this primitive; `00000000-0000-7000-8000-000000000001` for official starter primitives |
 | `parent_content_hash` | Content hash of the primitive this was evolved from; null for originals |
 | `permission_block` | 26-character encoded string (see Permission model) |
@@ -147,7 +170,7 @@ Tasks persist across server restarts.
 | `confirmed_at` | Optional ISO timestamp |
 | `confirmed` | Integer (0 or 1) |
 
-Populated on every evaluation submission. The `agency_instance` row is confirmed immediately after processing. The `home_pool` destination is not active in v1.2.0.
+Populated on every evaluation submission. Instance evaluations (`destination = 'agency_instance'`) are confirmed at submission time, independent of home pool connectivity. Home pool evaluations confirm on remote acknowledgement. These are independent paths.
 
 ### Primitive mutations
 
@@ -189,6 +212,9 @@ endpoint = ""                    # only used if backend = "api" or "other"
 model = "claude-sonnet-4-6"
 api_key = ""                     # only used if backend = "api" or "other"
 
+[assigner]
+strategy = "embedding"           # "embedding" (default) or "llm" (opt-in via feature flag)
+
 [notifications]
 contact_email = "you@example.com"
 error_notification_timeout = 1800
@@ -212,6 +238,8 @@ The `[llm]` section supports three backends:
 - `claude-code` — uses the `claude --print` CLI (user's existing Claude subscription; no API key required)
 - `api` — direct Anthropic API call with API key
 - `other` — any OpenAI-compatible endpoint (Ollama, LM Studio, other providers)
+
+The `[assigner]` section controls the dual-path assigner strategy (v1.2.3). See Internal agent types — Assigner.
 
 ### Key storage
 
@@ -332,11 +360,11 @@ Attribution is on by default. Overridable at instance level (`agency.toml [outpu
 
 ### MCP server (`agency mcp`)
 
-Transport: stdio. Launched by Claude Code as a subprocess. Requires `agency serve` to be running.
+Transport: stdio. Launched by Claude Code as a subprocess. Requires `agency serve` to be running (started automatically via MCP auto-start if not already running — see Zero-terminal).
 
 At startup, reads: Agency URL from `agency.toml`, JWT token from `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`), default project ID from `AGENCY_PROJECT_ID` env var or `agency.toml [project] default_id`.
 
-Seven tools (v1.2.2):
+Eight tools (v1.2.3):
 
 #### `agency_assign`
 
@@ -403,6 +431,49 @@ Calls `POST /projects`. Returns project_id and settings_applied.
 ```
 
 Calls `GET /status`. Returns instance status, per-project task summaries, and primitive counts.
+
+#### `agency_triage` (v1.2.3)
+
+```json
+{ "description": "string" }
+```
+
+Calls `POST /triage`. Returns best-matching primitives, recommendation (`compose` or `skip-safe`), and reasoning. See Triage endpoint below.
+
+### Triage endpoint (v1.2.3)
+
+`POST /triage` — lightweight, stateless, read-only primitive matching. Skips template selection, prompt rendering, composition caching, and task creation.
+
+**Request:**
+
+```json
+{
+  "description": "string (required)",
+  "project_id": "string (optional — reserved for future project-specific pools)"
+}
+```
+
+**Response:**
+
+```json
+{
+  "matched_primitives": [
+    { "name": "string", "type": "role_component|desired_outcome|trade_off_config", "similarity": 0.0 }
+  ],
+  "task_type": "unclassified",
+  "recommendation": "compose|skip-safe",
+  "reasoning": "string",
+  "warning": "string|null"
+}
+```
+
+`matched_primitives` contains at most `TRIAGE_TOP_N` (5) entries across all three slot types, sorted by similarity descending. Calls `find_similar()` three times (once per slot type) with `scope='task'` and `top_n=TRIAGE_TOP_N`, merges, deduplicates by primitive ID, sorts, and truncates.
+
+**Recommendation logic.** `"compose"` if any entry has `similarity >= METAPRIMITIVE_SIMILARITY_THRESHOLD` (0.5). `"skip-safe"` if all entries are below 0.5.
+
+**Reasoning field (deterministic):**
+- Compose: `"Matched {N} primitive(s) above 0.5 similarity; strongest match: '{name}' at {similarity}."`
+- Skip-safe: `"No primitive exceeded 0.5 similarity; strongest match: '{name}' at {similarity}. Composition would fill slots with low-relevance primitives."`
 
 ### CLI task commands (v1.2.2)
 
@@ -500,6 +571,7 @@ The batch endpoint is the preferred integration pattern. The calling tool sends 
       "content_hash": "string",
       "template_id": "string",
       "permission_block": "string",
+      "composition_fitness": {},
       "primitive_ids": {
         "role_components": ["uuid"],
         "desired_outcomes": ["uuid"],
@@ -510,7 +582,7 @@ The batch endpoint is the preferred integration pattern. The calling tool sends 
 }
 ```
 
-The `agents` map is deduplicated. The response now includes `permission_block` per agent composition. If the primitive store is empty, the endpoint returns `503` with `{"error": "primitive_store_empty"}`.
+The `agents` map is deduplicated. The response includes `permission_block` and `composition_fitness` per agent composition. `composition_fitness` contains `per_primitive_similarity`, `pool_coverage_warning`, `slots_filled`, and `slots_empty`. On the LLM path, it additionally contains `fitness_verdict` and `task_classification`. If the primitive store is empty, the endpoint returns `503` with `{"error": "primitive_store_empty"}`.
 
 ### Callbacks from field (evaluator -> Agency)
 
@@ -539,7 +611,19 @@ The endpoint computes SHA-256 of the received payload and returns `{"status": "o
 
 ### Assigner
 
-The assigner matches incoming tasks to agent configurations from the composition cache, or composes new configurations from primitives when no suitable cached agent exists. It weighs matches by historical performance and filters to primitives with quality > 90. When a task is underspecified, the assigner can request clarification before assigning.
+The assigner matches incoming tasks to agent configurations from the composition cache, or composes new configurations from primitives when no suitable cached agent exists. It weighs matches by historical performance and filters to primitives with quality > 90.
+
+v1.2.3 introduces a dual-path architecture controlled by the `[assigner] strategy` key in `agency.toml`:
+
+**Embedding path** (default, `strategy = "embedding"`): deterministic similarity-based selection. Translates three metaprimitive concepts into Python code:
+
+- **Relevance floor** — primitives below `METAPRIMITIVE_SIMILARITY_THRESHOLD` (0.5) cosine similarity are excluded from composition slots.
+- **Skill tag boost** — primitives whose description matches a skill tag receive a `SKILL_TAG_BOOST_FACTOR` (1.3×) similarity multiplier, capped at 1.0.
+- **Composition fitness metadata** — each assignment response includes `composition_fitness` with per-primitive similarity scores, `pool_coverage_warning` (true if no primitive in any slot exceeds `POOL_COVERAGE_WARNING_THRESHOLD` of 0.6), and slot fill/empty counts.
+
+**LLM path** (opt-in, `strategy = "llm"`): executes all seven starter metaprimitives as LLM instructions via `claude --print`. Loads metaprimitives from `scope = 'meta:assigner'`, retrieves top-20 task-primitive candidates per slot, renders a functional agent prompt, and calls the LLM for structured selection. Includes hallucination guardrails (selected IDs validated against candidate lists), per-slot embedding fallback for empty slots, timeout fallback (`ASSIGNER_LLM_TIMEOUT`, 30s), parse-failure retry (`ASSIGNER_LLM_MAX_RETRIES`, 1), and fallback telemetry logged to `~/.agency/assigner-fallback.log`. The LLM path additionally produces `fitness_verdict` and `task_classification` in `composition_fitness`.
+
+The LLM path is gated by a feature flag (`llm_assigner_available`) in the status file (`agency-status.json` in the public repo). When the flag is absent or false, the `[assigner] strategy = "llm"` setting is ignored and the embedding path is used.
 
 ### Evaluator
 
@@ -567,7 +651,7 @@ The renderer takes role components + desired outcomes + trade-off configurations
 
 The starter primitive set is hosted as a CSV file in the public Agency GitHub repository and fetched at init time. It is not bundled in the pip package.
 
-**CSV columns:** `type`, `name`, `description`, `quality`, `domain_specificity`, `domain`, `origin_instance_id`, `parent_content_hash`.
+**CSV columns:** `type`, `name`, `description`, `quality`, `domain_specificity`, `domain`, `scope`, `origin_instance_id`, `parent_content_hash`.
 
 ### `agency primitives update`
 
@@ -577,7 +661,7 @@ agency primitives update
 
 Fetches the current starter CSV and reconciles with the local store:
 
-1. **New primitives** (content hash not in local store, quality > 90): inserted with all CSV fields
+1. **New primitives** (content hash not in local store, quality > 90): inserted with all CSV fields including `scope`
 2. **Existing primitives with changed quality, domain_specificity, or domain**: local columns updated; one row written to `primitive_mutations` per changed field
 3. **Unchanged primitives**: no action
 4. **Local primitives not in upstream CSV**: no action (may be locally created)
@@ -591,9 +675,11 @@ Quality threshold is hardcoded at > 90 in v1.2.0.
 
 ### `agency init` — two-phase setup wizard
 
-Covers the full installation lifecycle. Every step checks whether it has already been completed and skips if so. Safe to re-run at any time.
+Covers the full installation lifecycle. Every step checks whether it has already been completed and skips if so. Safe to re-run at any time. Uses a three-layer typography system: (1) system status lines (dim, checkmark/cross prefix), (2) helper/explanation text (italic, indented), (3) user prompts (bold, cyan accent, `▶` prefix). Falls back to plain text when stdout is not a TTY.
 
-**Phase 1 — Configuration (6 steps, no server required):**
+Supports `--non-interactive` mode: when any flag is passed on the command line, the wizard runs without prompts, using flag values and defaults. This enables zero-terminal setup from within Claude Code.
+
+**Phase 1 — Configuration (5 steps, no server required):**
 
 | Step | What | Input |
 |---|---|---|
@@ -601,19 +687,19 @@ Covers the full installation lifecycle. Every step checks whether it has already
 | 1.2 | Configure server settings (host, port) | Automatic |
 | 1.3 | Configure LLM connection | User selects backend and provides credentials |
 | 1.4 | Configure notifications (contact email, timeout, oversight, SMTP) | User input |
-| 1.5 | Configure output defaults (attribution) | Automatic |
-| 1.6 | Register with Claude Code (MCP server in `~/.claude.json`) | User confirms |
+| 1.5 | Configure output defaults (attribution) | User input |
 
-**Phase 2 — Initialisation (6 steps, runs the server briefly):**
+**Phase 2 — Initialisation (7 steps, runs the server briefly):**
 
 | Step | What | Input |
 |---|---|---|
 | 2.1 | Initialise database (start server, run migrations, stop) | Automatic |
 | 2.2 | Download embedding model (`all-MiniLM-L6-v2`, ~80MB) | Automatic |
-| 2.3 | Install starter primitives (fetch CSV from GitHub) | User confirms |
+| 2.3 | Install starter primitives (fetch CSV from GitHub — auto-download on first install) | Automatic |
 | 2.4 | Create first project (runs project creation wizard) | User input |
-| 2.5 | Create integration tokens (MCP, CLI, Superpowers, Workgraph) | User selects |
-| 2.6 | Install Claude Code skill (`agency-primitive-extraction`) | Automatic |
+| 2.5 | Create integration tokens (MCP, CLI, Superpowers, Workgraph) | Automatic |
+| 2.6 | Register with Claude Code (MCP server in `~/.claude.json`) | User confirms |
+| 2.7 | Install Claude Code skills | Automatic |
 
 ### `agency client setup`
 
@@ -621,7 +707,7 @@ Covers the full installation lifecycle. Every step checks whether it has already
 agency client setup
 ```
 
-Reviews and updates instance-level settings. Shows the current value of every setting; press enter to keep or type a new value to change. Includes protective behaviours for high-impact changes: keypair rotation requires typed confirmation and revokes all tokens; LLM changes run a connection test; contact email changes note which projects inherit.
+Reviews and updates instance-level settings. Shows the current value of every setting; press enter to keep or type a new value to change. Includes protective behaviours for high-impact changes: keypair rotation requires typed confirmation and revokes all tokens; LLM changes run a connection test; contact email changes note which projects inherit. Supports `--non-interactive` mode via flags.
 
 ### `agency project create`
 
@@ -639,8 +725,10 @@ agency skills install
 
 Installs bundled Claude Code skills into `~/.claude/skills/`. Idempotent — updates any skill whose content hash differs from the bundled version.
 
-Bundled skills in v1.2.0:
+Bundled skills in v1.2.3:
 - `agency-primitive-extraction` — guides Claude through extracting and authoring Agency primitives from existing prompts and agent descriptions
+- `getting-started-with-agency` — interactive walkthrough of the Agency workflow (assign → execute → evaluate), primitives explanation, and optional CLAUDE.md configuration
+- `agency-composition-config` — guided editing of `~/.agency/composition-rules.csv` via Claude Code conversation
 
 ### Token commands
 
@@ -649,6 +737,40 @@ agency token create --client-id <name>    # create, print to stdout
 agency token list                          # table of all issued tokens
 agency token revoke --client-id <name>     # revoke all tokens for a client
 ```
+
+---
+
+## Zero-terminal
+
+Agency supports fully zero-terminal operation: all setup, configuration, and serving can run inside Claude Code without requiring a separate terminal window.
+
+### MCP auto-start
+
+When the MCP server starts (`agency mcp`), it checks whether `agency serve` is reachable. If not, it spawns `agency serve` as a background subprocess and polls the `/health` endpoint until the server is ready or timeout (30s). The server process is registered for cleanup on MCP process exit (`atexit`). If `agency serve` is already running, no action is taken.
+
+### Non-interactive flags
+
+`agency init` and `agency client setup` accept command-line flags for all configuration values. When any flag is provided, the wizard runs non-interactively using flag values and sensible defaults. This allows Claude Code to run setup without interactive stdin.
+
+---
+
+## First-run onboarding
+
+On the first successful `agency_assign` or `agency_status` MCP tool call, Agency injects a `first_run_onboarding` field into the response:
+
+```json
+{
+  "first_run_onboarding": {
+    "message": "Agency is set up and working. Would you like a quick walkthrough of how to use it?",
+    "skill_name": "getting-started-with-agency",
+    "skip_instruction": "To skip, just proceed with your task. This message won't appear again."
+  }
+}
+```
+
+The field is injected in the MCP layer, not the API layer. Detection uses a marker file (`~/.agency/.onboarded`): absent = first run (inject and create marker), present = skip. The field appears once per instance lifetime.
+
+The `getting-started-with-agency` skill is also invocable at any time via `/getting-started-with-agency`.
 
 ---
 
@@ -764,6 +886,7 @@ Parallel evaluations: N variant agents, identical except for one mutated primiti
 | `sentence-transformers` | Local embedding model |
 | `sqlite-vec` | Vector similarity search |
 | `tomli` / `tomli-w` | TOML config read/write |
+| `httpx` | HTTP client for auto-start health checks and MCP-to-API calls |
 
 ---
 
@@ -780,7 +903,7 @@ agency init
 agency serve
 ```
 
-All configuration, database initialisation, primitive installation, project creation, and token creation are handled by `agency init`.
+All configuration, database initialisation, primitive installation, project creation, and token creation are handled by `agency init`. When using Agency via MCP in Claude Code, the server is started automatically (see Zero-terminal).
 
 ---
 
@@ -813,3 +936,29 @@ v1.2.2 is additive with these exceptions:
 3. **Assign response gains `task_ids` summary block.** Additive.
 4. **`agents` table gains `template_id` column** via migration. Existing rows auto-populate with `"default"`. Inert in v1.2.2.
 5. **`agent_hash` in status endpoint** now returns `agents.content_hash` (SHA-256) instead of `agent_composition_id` (UUID).
+
+### Compatibility with v1.2.2
+
+v1.2.3 is additive with these exceptions:
+
+1. **`scope` column added to all three primitive tables** (`role_components`, `desired_outcomes`, `trade_off_configs`) via migration. `TEXT NOT NULL DEFAULT 'task'`. Existing rows default to `'task'`. The `primitives` view is dropped and recreated to include `scope`.
+
+2. **Data migration: composition FK mismatch fixed.** `tasks.agent_composition_id` contained SHA-256 content hashes instead of agent UUIDs. Migration converts by looking up `agents.id` via `agents.content_hash` (guarded by `length > 36`).
+
+3. **Data migration: instance evaluations retroactively confirmed.** All `pending_evaluations` rows with `destination = 'agency_instance'` and `confirmed = 0` are set to `confirmed = 1`.
+
+4. **`agency.toml` gains `[assigner]` section.** Additive — absent section defaults to `strategy = "embedding"`.
+
+5. **`composition-rules.csv` created on first serve.** New file at `~/.agency/composition-rules.csv` with 5 starter rules. User-editable; `agency primitives update` does not overwrite it.
+
+6. **Assign response gains `composition_fitness` per agent.** Additive.
+
+7. **New endpoint: `POST /triage`.** Additive.
+
+8. **New MCP tool: `agency_triage`.** Additive — tool count increases from 7 to 8.
+
+9. **`first_run_onboarding` field injected on first successful MCP call.** One-time, additive. Controlled by `~/.agency/.onboarded` marker file.
+
+10. **Starter CSV gains `scope` column.** Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade to ingest 7 new metaprimitives.
+
+11. **New bundled skills:** `getting-started-with-agency`, `agency-composition-config`. Run `agency skills install` to install.
