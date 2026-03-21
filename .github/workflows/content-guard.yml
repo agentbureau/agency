@@ -1,0 +1,104 @@
+# Content guard — defence in depth
+#
+# Mirrors the local pre-commit hook to catch private file paths,
+# internal repo references, and local filesystem paths before they
+# reach the remote. Runs on every push and pull request.
+
+name: Content Guard
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  content-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run content guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VIOLATIONS=""
+
+          # Determine diff range
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            DIFF_RANGE="${BASE}..HEAD"
+          else
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              DIFF_RANGE="HEAD~1..HEAD"
+            else
+              # Initial commit — diff against empty tree
+              DIFF_RANGE="$(git hash-object -t tree /dev/null)..HEAD"
+            fi
+          fi
+
+          # Get list of changed files (added, modified, copied, renamed)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMR "$DIFF_RANGE" || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No changed files to check."
+            exit 0
+          fi
+
+          # --- PATH CHECK ---
+          # Reject files in directories that should never be in the public repo
+          BLOCKED_PATHS="^(continuity/|docs/plans/|\.claude/|design/|PRDs/)"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if echo "$file" | grep -qE "$BLOCKED_PATHS"; then
+              VIOLATIONS="${VIOLATIONS}PATH VIOLATION: ${file}\n"
+            fi
+          done <<< "$CHANGED_FILES"
+
+          # --- CONTENT CHECK ---
+          # Reject added lines containing private/local path patterns
+          BLOCKED_CONTENT="/Users/|/home/|Dropbox|notknowing|agency-internal|\.claude/|continuity/|docs/plans/|/design/|/PRDs/"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            # Skip binary files
+            if file --brief --mime "$file" 2>/dev/null | grep -qv "^text/"; then
+              continue
+            fi
+
+            # Skip files that no longer exist (deletions)
+            [ -f "$file" ] || continue
+
+            # Scan only added lines (+ prefix), excluding +++ diff headers
+            DIFF_OUTPUT=$(git diff "$DIFF_RANGE" -- "$file" || true)
+            OFFENDING=$(echo "$DIFF_OUTPUT" \
+              | grep -E '^\+' \
+              | grep -v '^\+\+\+' \
+              | grep -nE "$BLOCKED_CONTENT" || true)
+
+            if [ -n "$OFFENDING" ]; then
+              while IFS= read -r line; do
+                VIOLATIONS="${VIOLATIONS}CONTENT VIOLATION in ${file}: ${line}\n"
+              done <<< "$OFFENDING"
+            fi
+          done <<< "$CHANGED_FILES"
+
+          # --- REPORT ---
+          if [ -n "$VIOLATIONS" ]; then
+            echo "========================================="
+            echo "  CONTENT GUARD: VIOLATIONS DETECTED"
+            echo "========================================="
+            echo ""
+            printf "$VIOLATIONS"
+            echo ""
+            echo "Fix these violations before merging."
+            exit 1
+          fi
+
+          echo "Content guard passed — no violations found."
