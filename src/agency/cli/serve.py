@@ -54,6 +54,8 @@ def serve_command(host: str | None, port: int | None, reload: bool):
     print(f"  Config:        {cfg_expanded}", file=sys.stderr)
     print(f"  State dir:     {state_expanded}", file=sys.stderr)
     print(f"  PID:           {os.getpid()}", file=sys.stderr)
+    print(file=sys.stderr)
+    print(f'Tell Claude Code: "Use Agency to compose agents for tasks in this project."', file=sys.stderr)
 
     uvicorn.run(
         "agency.api.app:create_app",

@@ -109,3 +109,43 @@ def test_batch_assign_503_if_no_primitives(tmp_path, monkeypatch):
         ]}, headers=auth)
         assert r.status_code == 503
         assert r.json()["detail"]["error"] == "primitive_store_empty"
+
+
+def test_batch_assign_includes_project_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    _setup_keypair(tmp_path)
+    _seed_primitives(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        auth = _make_auth(tmp_path, app)
+        r = c.post("/projects", json={"name": "verifyproj"}, headers=auth)
+        pid = r.json()["project_id"]
+        r = c.post(f"/projects/{pid}/assign", json={"tasks": [
+            {"external_id": "t1", "description": "do a thing"},
+        ]}, headers=auth)
+        assert r.status_code == 200
+        body = r.json()
+        assert "project_verification" in body
+        assert body["project_verification"]["project_id"] == pid
+        assert body["project_verification"]["project_name"] == "verifyproj"
+
+
+def test_project_verification_has_correct_schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    _setup_keypair(tmp_path)
+    _seed_primitives(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        auth = _make_auth(tmp_path, app)
+        r = c.post("/projects", json={"name": "schemaproj"}, headers=auth)
+        pid = r.json()["project_id"]
+        r = c.post(f"/projects/{pid}/assign", json={"tasks": [
+            {"external_id": "t1", "description": "do a thing"},
+        ]}, headers=auth)
+        assert r.status_code == 200
+        pv = r.json()["project_verification"]
+        assert set(pv.keys()) == {"project_id", "project_name", "prompt"}
+        assert isinstance(pv["project_id"], str)
+        assert isinstance(pv["project_name"], str)
+        assert isinstance(pv["prompt"], str)
+        assert "schemaproj" in pv["prompt"]

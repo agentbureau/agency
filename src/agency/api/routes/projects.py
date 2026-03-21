@@ -120,6 +120,14 @@ def batch_assign(project_id: str, req: BatchAssignRequest, request: Request):
                 assignment["agent_id"],
             )
 
+    # Add project verification info (§5 adoption improvements)
+    project_name = project.get("name") if project else None
+    packet["project_verification"] = {
+        "project_id": project_id,
+        "project_name": project_name,
+        "prompt": f'Confirm "{project_name}" is the correct project for this session. If not, create a new project with agency_create_project.',
+    }
+
     return packet
 
 
