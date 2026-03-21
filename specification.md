@@ -13,7 +13,7 @@ v1.2.0 adds native MCP integration for Claude Code, Ed25519 authentication, toke
 
 v1.2.2 adds CLI task commands (`agency task {assign,evaluator,submit,get}`), a shared client module, a new `GET /tasks/{task_id}` API endpoint with re-rendering pipeline, the `agency_get_task` MCP tool, `error_type` in all error responses, `task_ids` summary block in assign responses, and `status: "ok"` across all success responses.
 
-v1.2.3 adds the metaprimitives architecture (scope column, composition config, dual-path assigner with embedding default and LLM path behind feature flag), a lightweight triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive flags for `agency init` and `agency client setup`, first-run onboarding, three-layer typography for the setup wizard, critical persistence bug fixes (composition FK and evaluation confirmation), two new bundled skills (`getting-started-with-agency`, `agency-composition-config`), and 7 starter assigner metaprimitives.
+v1.2.3 adds metaprimitives (primitives that govern Agency's own functional agents), a triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive setup flags, first-run onboarding, setup wizard improvements, critical persistence bug fixes, and two new bundled skills (`getting-started-with-agency`, `agency-composition-config`).
 
 ---
 
@@ -33,19 +33,13 @@ Each primitive carries a quality score (integer, 0-100). The assigner only selec
 
 ### Metaprimitives
 
-A metaprimitive is a primitive composed into one of Agency's functional agents (assigner, evaluator, evolver, agent creator) — governing how Agency itself operates, as distinct from task primitives composed into requester-facing agents.
+A metaprimitive is a primitive that governs how Agency itself operates — as distinct from task primitives composed into requester-facing agents. Metaprimitives live in the same primitive tables as task primitives, distinguished by a `scope` column. Values: `task` (default), `meta:assigner`, `meta:evaluator`, `meta:evolver`, `meta:agent_creator`.
 
-Metaprimitives live in the same three primitive tables as task primitives. The `scope` column distinguishes them. Values: `task` (default), `meta:assigner`, `meta:evaluator`, `meta:evolver`, `meta:agent_creator`. The assigner queries only `scope = 'task'` primitives when composing task agents, and only `scope = 'meta:assigner'` primitives when composing its own functional behaviour.
-
-v1.2.3 ships 7 starter assigner metaprimitives covering task-type classification, fitness verification, skill tag utilisation, relevance flooring, coverage gap signalling, and bypass governance.
+v1.2.3 ships 7 starter assigner metaprimitives.
 
 ### Composition config
 
-`~/.agency/composition-rules.csv` governs how functional agents are composed. It contains natural language rules matched by embedding similarity against incoming task descriptions and agent-type context.
-
-**CSV columns:** `agent_type`, `rule`, `max_role_components`, `max_desired_outcomes`, `max_trade_off_configs`, `all_projects`, `project_ids`.
-
-The composition config is a **watched file**: changes are detected at runtime and take effect on the next `agency_assign` call without server restart.
+`~/.agency/composition-rules.csv` governs how Agency's functional agents are composed. It is a watched file: changes take effect on the next composition call without server restart. Editable directly or via the `agency-composition-config` skill in Claude Code.
 
 ### Triage
 
@@ -59,11 +53,11 @@ An **actor-agent** is an agent that has been assigned to a specific task and is 
 
 ### Self-similar system
 
-All special-type agents — assigner, evaluator, evolver, agent creator — are first-class agents governed by the same primitive structure as every other agent. None are privileged system components. All accumulate performance history and are subject to selection pressure. Functional agents are composed from metaprimitives (primitives with `scope = 'meta:<agent_type>'`), selected via the composition config CSV.
+All special-type agents — assigner, evaluator, evolver, agent creator — are first-class agents governed by the same primitive structure as every other agent. None are privileged system components. All accumulate performance history and are subject to selection pressure.
 
 ### Batch assignment
 
-A single API call that accepts a complete set of task descriptions, composes an agent for each, deduplicates similar compositions, and returns a packet containing all assignments and all unique agent definitions. The calling tool stores this packet locally and does not need to call Agency again during execution.
+A single API call that accepts a complete set of task descriptions, composes an agent for each, deduplicates similar compositions, and returns a packet containing all assignments and all unique agent definitions. The requester stores this packet locally and does not need to call Agency again during execution.
 
 This is the preferred integration pattern for task management tools. It replaces per-task calls during execution with a single pre-flight call before execution begins.
 
@@ -78,118 +72,6 @@ Seven settings operate on a two-level hierarchy. The instance level (in `agency.
 The seven hierarchical settings are: contact email, oversight preference, error notification timeout, attribution, LLM provider, LLM model, and LLM API key.
 
 Resolution rule: the project column value is used if non-null; otherwise the instance value is used. A null project value means "use whatever the instance is currently set to." If the instance setting is later changed, all projects with null for that field inherit the new value automatically.
-
----
-
-## Data model
-
-### Primitive store
-
-Each primitive record stores:
-
-| Field | Notes |
-|---|---|
-| `id` | UUID v7 (globally unique, time-ordered) |
-| `description` | Natural language string |
-| `content_hash` | SHA-256 of description — stable identity, deduplication |
-| `embedding` | Semantic vector — used for similarity search and evolution |
-| `quality` | Integer 0-100 — selection eligibility threshold (> 90 required) |
-| `domain_specificity` | Integer 0-100 — how domain-specific this primitive is |
-| `domain` | JSON array of strings (e.g. `["research","writing"]`) — empty array means domain-neutral |
-| `scope` | `task` (default), `meta:assigner`, `meta:evaluator`, `meta:evolver`, or `meta:agent_creator` — selection boundary between task primitives and metaprimitives |
-| `origin_instance_id` | UUID of the instance that created this primitive; `00000000-0000-7000-8000-000000000001` for official starter primitives |
-| `parent_content_hash` | Content hash of the primitive this was evolved from; null for originals |
-| `permission_block` | 26-character encoded string (see Permission model) |
-| `override_capability` | 12-character encoded string or null (role components only) |
-| `instance_id`, `client_id`, `project_id` | UUID v7s (provenance) |
-| Performance metadata | Former agents it was part of; evaluations received |
-
-### Composition cache
-
-Pre-composed agents on top of the primitive store. Each agent record stores the IDs of its constituent primitives, a content hash of the composition, its permission block (26-character encoded string), and its performance history. The cache is a performance optimisation; the primitive store is the ground truth.
-
-### Projects
-
-Each project record stores:
-
-| Field | Notes |
-|---|---|
-| `id` | UUID v7 |
-| `name` | String |
-| `client_id` | Optional UUID v7 |
-| `description` | Optional string |
-| `contact_email` | Nullable — null inherits instance default |
-| `oversight_preference` | `discretion` or `review` — nullable, null inherits |
-| `error_notification_timeout` | Integer seconds — nullable, null inherits |
-| `attribution` | Integer (1=on, 0=off) — nullable, null inherits |
-| `llm_provider` | Nullable — null inherits instance LLM backend |
-| `llm_model` | Nullable — null inherits instance model |
-| `llm_api_key` | Nullable — null inherits instance API key |
-| `homepool_retry_max_interval` | Integer seconds — nullable, system default 3600; no effect in v1.2.0 |
-| `permission_block` | 13-character encoded string — default `1400000000006` |
-| `created_at` | ISO timestamp |
-
-### Tasks
-
-Each task record stores:
-
-| Field | Notes |
-|---|---|
-| `id` | UUID v7 (Agency's internal ID) |
-| `external_id` | The calling tool's own identifier — optional, stored for the caller's use |
-| `project_id` | Optional UUID v7 |
-| `description` | Task description |
-| `output_format`, `output_structure`, `clarification_behaviour` | Task parameters |
-| `agent_composition_id` | Set after assignment — FK to composition cache |
-| `created_at` | ISO timestamp |
-
-Tasks persist across server restarts.
-
-### Issued tokens
-
-| Field | Notes |
-|---|---|
-| `jti` | UUID v7 — primary key, included as JWT claim |
-| `client_id` | String — identifies the integration (e.g. `mcp`, `superpowers`, `workgraph`) |
-| `created_at` | ISO timestamp |
-| `expires_at` | Optional ISO timestamp |
-| `revoked` | Integer (0 or 1) |
-| `revoked_at` | Optional ISO timestamp |
-
-### Pending evaluations
-
-| Field | Notes |
-|---|---|
-| `id` | UUID v7 |
-| `task_id` | UUID v7 |
-| `evaluator_data` | JSON — evaluator description + evaluation payload |
-| `content_hash` | SHA-256 of evaluator_data |
-| `destination` | `agency_instance` or `home_pool` |
-| `created_at` | ISO timestamp |
-| `last_ping_at` | Optional ISO timestamp |
-| `confirmed_at` | Optional ISO timestamp |
-| `confirmed` | Integer (0 or 1) |
-
-Populated on every evaluation submission. Instance evaluations (`destination = 'agency_instance'`) are confirmed at submission time, independent of home pool connectivity. Home pool evaluations confirm on remote acknowledgement. These are independent paths.
-
-### Primitive mutations
-
-| Field | Notes |
-|---|---|
-| `id` | UUID v7 |
-| `content_hash` | Identifies the primitive (stable across metadata changes) |
-| `field` | `quality`, `domain_specificity`, or `domain` |
-| `old_value` | Previous value; null if first recorded |
-| `new_value` | New value |
-| `changed_by` | Instance ID that made the change |
-| `changed_at` | ISO timestamp |
-| `evidence` | JSON — e.g. `{"source": "upstream_csv", "fetched_at": "<timestamp>"}` |
-
-Written by `agency primitives update` whenever it changes quality, domain_specificity, or domain from the upstream CSV.
-
-### Unique identifiers
-
-All IDs are UUID v7: globally unique without coordination, time-ordered. The instance ID is generated during `agency init` Phase 1.
 
 ---
 
@@ -211,9 +93,6 @@ backend = "claude-code"          # or "api" or "other"
 endpoint = ""                    # only used if backend = "api" or "other"
 model = "claude-sonnet-4-6"
 api_key = ""                     # only used if backend = "api" or "other"
-
-[assigner]
-strategy = "embedding"           # "embedding" (default) or "llm" (opt-in via feature flag)
 
 [notifications]
 contact_email = "you@example.com"
@@ -238,8 +117,6 @@ The `[llm]` section supports three backends:
 - `claude-code` — uses the `claude --print` CLI (user's existing Claude subscription; no API key required)
 - `api` — direct Anthropic API call with API key
 - `other` — any OpenAI-compatible endpoint (Ollama, LM Studio, other providers)
-
-The `[assigner]` section controls the dual-path assigner strategy (v1.2.3). See Internal agent types — Assigner.
 
 ### Key storage
 
@@ -291,48 +168,6 @@ Revocation requires confirmation by typing: `yes, cancel every token, even ones 
 ### Compatibility with v1.1.0
 
 v1.2.0 uses `EdDSA` instead of v1.1.0's `HS256`. All v1.1.0 tokens are immediately invalid after upgrading. Users must recreate tokens with `agency token create`.
-
----
-
-## Permission model
-
-Every primitive and every composed agent carries a permission block encoding who may access or modify it, whether that authorisation is permanent or time-limited, and whether it can be re-delegated.
-
-### 13-character block encoding
-
-| Position | Values | Meaning |
-|---|---|---|
-| 1 | `0` `1` `2` `3` | Access: `0`=default, `1`=human only, `2`=machine only, `3`=human or machine |
-| 2 | `4` `5` | Duration: `4`=permanent, `5`=time-limited |
-| 3-12 | 10-digit Unix timestamp | Expiry — zeros if permanent |
-| 13 | `6` `7` `8` `9` | Re-delegation: `6`=none, `7`=human only, `8`=machine only, `9`=human or machine |
-
-Default: `1400000000006` (human-only, permanent, no re-delegation).
-
-### 26-character permission block
-
-Agents and primitives carry two concatenated 13-character blocks:
-
-- **Block 1 (positions 1-13):** inherited from project
-- **Block 2 (positions 14-26):** entity-level override
-
-Resolution: if Block 2 is non-default (position 14 is not `0`), Block 2 governs. Otherwise Block 1 governs.
-
-Projects carry a single 13-character block, copied into Block 1 of every entity created within the project.
-
-### Override capability on role components
-
-A role component may carry an `override_capability` — a 12-character string granting access within a defined scope, bypassing the permission block check.
-
-| Position | Values | Meaning |
-|---|---|---|
-| 1 | `1` `2` `3` `4` | Scope: `1`=project, `2`=agent, `3`=primitive, `4`=all |
-| 2 | `4` `5` | Duration: `4`=permanent, `5`=time-limited |
-| 3-12 | 10-digit Unix timestamp | Expiry — zeros if permanent |
-
-### Default permissions
-
-All primitive types default to human-only, permanent, no re-delegation (`1400000000006`). The evolver and agent creator cannot modify or create primitives without explicit human delegation.
 
 ---
 
@@ -402,7 +237,7 @@ Calls `GET /tasks/{agency_task_id}/evaluator`. Returns `evaluator_prompt` and `c
 }
 ```
 
-Calls `POST /tasks/{agency_task_id}/evaluation`. Returns `{"status": "ok", "content_hash": "<sha256>"}`. The caller should verify the returned content hash against the SHA-256 of the payload sent.
+Calls `POST /tasks/{agency_task_id}/evaluation`. Returns `{"status": "ok", "content_hash": "<sha256>"}`. The requester should verify the returned content hash against the SHA-256 of the payload sent.
 
 #### `agency_get_task` (v1.2.2)
 
@@ -460,20 +295,10 @@ Calls `POST /triage`. Returns best-matching primitives, recommendation (`compose
   "matched_primitives": [
     { "name": "string", "type": "role_component|desired_outcome|trade_off_config", "similarity": 0.0 }
   ],
-  "task_type": "unclassified",
   "recommendation": "compose|skip-safe",
-  "reasoning": "string",
-  "warning": "string|null"
+  "reasoning": "string"
 }
 ```
-
-`matched_primitives` contains at most `TRIAGE_TOP_N` (5) entries across all three slot types, sorted by similarity descending. Calls `find_similar()` three times (once per slot type) with `scope='task'` and `top_n=TRIAGE_TOP_N`, merges, deduplicates by primitive ID, sorts, and truncates.
-
-**Recommendation logic.** `"compose"` if any entry has `similarity >= METAPRIMITIVE_SIMILARITY_THRESHOLD` (0.5). `"skip-safe"` if all entries are below 0.5.
-
-**Reasoning field (deterministic):**
-- Compose: `"Matched {N} primitive(s) above 0.5 similarity; strongest match: '{name}' at {similarity}."`
-- Skip-safe: `"No primitive exceeded 0.5 similarity; strongest match: '{name}' at {similarity}. Composition would fill slots with low-relevance primitives."`
 
 ### CLI task commands (v1.2.2)
 
@@ -534,7 +359,7 @@ All error responses include six fields:
 | IN | List of task descriptions + project ID | `POST /projects/{id}/assign` |
 | OUT | Assignment packet | Task-to-agent mapping + deduplicated agent definitions |
 
-The batch endpoint is the preferred integration pattern. The calling tool sends all tasks at once before execution begins. Agency returns a packet mapping each task to a composed agent and including all unique agent definitions. Tasks that compose to similar agents (cosine similarity >= 0.90) share a single agent definition.
+The batch endpoint is the preferred integration pattern. The requester sends all tasks at once before execution begins. Agency returns a packet mapping each task to a composed agent and including all unique agent definitions. Tasks that compose to similar agents (cosine similarity >= 0.90) share a single agent definition.
 
 **Request body:**
 
@@ -571,7 +396,6 @@ The batch endpoint is the preferred integration pattern. The calling tool sends 
       "content_hash": "string",
       "template_id": "string",
       "permission_block": "string",
-      "composition_fitness": {},
       "primitive_ids": {
         "role_components": ["uuid"],
         "desired_outcomes": ["uuid"],
@@ -582,7 +406,7 @@ The batch endpoint is the preferred integration pattern. The calling tool sends 
 }
 ```
 
-The `agents` map is deduplicated. The response includes `permission_block` and `composition_fitness` per agent composition. `composition_fitness` contains `per_primitive_similarity`, `pool_coverage_warning`, `slots_filled`, and `slots_empty`. On the LLM path, it additionally contains `fitness_verdict` and `task_classification`. If the primitive store is empty, the endpoint returns `503` with `{"error": "primitive_store_empty"}`.
+The `agents` map is deduplicated. If the primitive store is empty, the endpoint returns `503` with `{"error": "primitive_store_empty"}`.
 
 ### Callbacks from field (evaluator -> Agency)
 
@@ -590,7 +414,7 @@ The `agents` map is deduplicated. The response includes `permission_block` and `
 |---|---|
 | IN | Full evaluation report — `POST /tasks/{id}/evaluation` |
 
-The endpoint computes SHA-256 of the received payload and returns `{"status": "ok", "content_hash": "<sha256>"}`. The caller verifies the returned hash against the hash of what was sent. Duplicate submissions (same `jti` + `task_id`) are rejected with 401.
+The endpoint computes SHA-256 of the received payload and returns `{"status": "ok", "content_hash": "<sha256>"}`. The requester verifies the returned hash against the hash of what was sent. Duplicate submissions (same `jti` + `task_id`) are rejected with 401.
 
 ### Evolution oversight
 
@@ -604,46 +428,6 @@ The endpoint computes SHA-256 of the received payload and returns `{"status": "o
 | Direction | Signal |
 |---|---|
 | IN | Primitive ingestion — `POST /primitives` (single) or `POST /primitives/import` (CSV) |
-
----
-
-## Internal agent types
-
-### Assigner
-
-The assigner matches incoming tasks to agent configurations from the composition cache, or composes new configurations from primitives when no suitable cached agent exists. It weighs matches by historical performance and filters to primitives with quality > 90.
-
-v1.2.3 introduces a dual-path architecture controlled by the `[assigner] strategy` key in `agency.toml`:
-
-**Embedding path** (default, `strategy = "embedding"`): deterministic similarity-based selection. Translates three metaprimitive concepts into Python code:
-
-- **Relevance floor** — primitives below `METAPRIMITIVE_SIMILARITY_THRESHOLD` (0.5) cosine similarity are excluded from composition slots.
-- **Skill tag boost** — primitives whose description matches a skill tag receive a `SKILL_TAG_BOOST_FACTOR` (1.3×) similarity multiplier, capped at 1.0.
-- **Composition fitness metadata** — each assignment response includes `composition_fitness` with per-primitive similarity scores, `pool_coverage_warning` (true if no primitive in any slot exceeds `POOL_COVERAGE_WARNING_THRESHOLD` of 0.6), and slot fill/empty counts.
-
-**LLM path** (opt-in, `strategy = "llm"`): executes all seven starter metaprimitives as LLM instructions via `claude --print`. Loads metaprimitives from `scope = 'meta:assigner'`, retrieves top-20 task-primitive candidates per slot, renders a functional agent prompt, and calls the LLM for structured selection. Includes hallucination guardrails (selected IDs validated against candidate lists), per-slot embedding fallback for empty slots, timeout fallback (`ASSIGNER_LLM_TIMEOUT`, 30s), parse-failure retry (`ASSIGNER_LLM_MAX_RETRIES`, 1), and fallback telemetry logged to `~/.agency/assigner-fallback.log`. The LLM path additionally produces `fitness_verdict` and `task_classification` in `composition_fitness`.
-
-The LLM path is gated by a feature flag (`llm_assigner_available`) in the status file (`agency-status.json` in the public repo). When the flag is absent or false, the `[assigner] strategy = "llm"` setting is ignored and the embedding path is used.
-
-### Evaluator
-
-The evaluator grades completed actor-agent tasks. It is not run inside Agency. It is rendered as a markdown agent description and sent to the task manager alongside the task agent. It runs in the task manager's environment. On task completion it calls back directly to the client's Agency instance.
-
-The callback JWT is baked into the evaluator's markdown at creation time, bound to a specific task. Reports where the task ID in the body does not match the JWT are rejected. Each JWT can be consumed only once.
-
-### Evolver
-
-The evolver modifies primitives and their configurations. Its mutation strategies are themselves first-class role components stored in the primitive store. The evolver targets two dimensions: (1) level — individual primitive, composition, or agent; (2) amount — minimal, moderate, or maximal change.
-
-Evolution of trade-off configurations may proceed automatically. Evolution of desired outcomes requires human sign-off.
-
-### Agent creator
-
-The agent creator expands the primitive store by searching outside the agency for new role components, desired outcomes, and trade-off configurations.
-
-### Renderer
-
-The renderer takes role components + desired outcomes + trade-off configurations + task description and produces a single short markdown document. When attribution is enabled, the renderer appends the attribution instruction in the appropriate format. The rendering template is an evolvable parameter.
 
 ---
 
@@ -847,18 +631,6 @@ Agency emails the resolved contact address when it encounters a problem it canno
 
 Uses Python's standard library `smtplib` with TLS. Configured in `agency.toml [smtp]`. If `[smtp]` is absent or incomplete, Agency logs the error and the notification intent but does not attempt to send email.
 
-### Content hash confirmation
-
-When `POST /tasks/{id}/evaluation` receives a payload, it computes SHA-256 of the received body, writes a row to `pending_evaluations`, processes the evaluation, marks the row confirmed, and returns the content hash. The caller verifies the returned hash against what was sent.
-
----
-
-## Evolution mechanism
-
-Primitives carry both a content hash (identity) and a semantic embedding (position in meaning-space). The evolver operates on these differently: content hashes track versions; embeddings are mutation targets.
-
-Parallel evaluations: N variant agents, identical except for one mutated primitive, run against the same task. The best-performing variant is selected. This is token-intensive and triggered explicitly.
-
 ---
 
 ## Tech stack
@@ -943,22 +715,18 @@ v1.2.3 is additive with these exceptions:
 
 1. **`scope` column added to all three primitive tables** (`role_components`, `desired_outcomes`, `trade_off_configs`) via migration. `TEXT NOT NULL DEFAULT 'task'`. Existing rows default to `'task'`. The `primitives` view is dropped and recreated to include `scope`.
 
-2. **Data migration: composition FK mismatch fixed.** `tasks.agent_composition_id` contained SHA-256 content hashes instead of agent UUIDs. Migration converts by looking up `agents.id` via `agents.content_hash` (guarded by `length > 36`).
+2. **`agency.toml` gains `[assigner]` section.** Additive — absent section defaults to `strategy = "embedding"`.
 
-3. **Data migration: instance evaluations retroactively confirmed.** All `pending_evaluations` rows with `destination = 'agency_instance'` and `confirmed = 0` are set to `confirmed = 1`.
+3. **`composition-rules.csv` created on first serve.** New file at `~/.agency/composition-rules.csv` with 5 starter rules. User-editable; `agency primitives update` does not overwrite it.
 
-4. **`agency.toml` gains `[assigner]` section.** Additive — absent section defaults to `strategy = "embedding"`.
+4. **Assign response gains `composition_fitness` per agent.** Additive.
 
-5. **`composition-rules.csv` created on first serve.** New file at `~/.agency/composition-rules.csv` with 5 starter rules. User-editable; `agency primitives update` does not overwrite it.
+5. **New endpoint: `POST /triage`.** Additive.
 
-6. **Assign response gains `composition_fitness` per agent.** Additive.
+6. **New MCP tool: `agency_triage`.** Additive — tool count increases from 7 to 8.
 
-7. **New endpoint: `POST /triage`.** Additive.
+7. **`first_run_onboarding` field injected on first successful MCP call.** One-time, additive. Controlled by `~/.agency/.onboarded` marker file.
 
-8. **New MCP tool: `agency_triage`.** Additive — tool count increases from 7 to 8.
+8. **Starter CSV gains `scope` column.** Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade to ingest 7 new metaprimitives.
 
-9. **`first_run_onboarding` field injected on first successful MCP call.** One-time, additive. Controlled by `~/.agency/.onboarded` marker file.
-
-10. **Starter CSV gains `scope` column.** Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade to ingest 7 new metaprimitives.
-
-11. **New bundled skills:** `getting-started-with-agency`, `agency-composition-config`. Run `agency skills install` to install.
+9. **New bundled skills:** `getting-started-with-agency`, `agency-composition-config`. Run `agency skills install` to install.
