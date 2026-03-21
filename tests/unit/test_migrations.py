@@ -219,3 +219,50 @@ def test_migration_confirms_existing_instance_evaluations():
     ).fetchone()
     assert row[0] == 1, "evaluation should be confirmed after migration"
     assert row[1] is not None, "confirmed_at should be set"
+
+
+def test_scope_column_exists_on_role_components(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(role_components)").fetchall()}
+    assert "scope" in cols
+
+
+def test_scope_column_exists_on_desired_outcomes(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(desired_outcomes)").fetchall()}
+    assert "scope" in cols
+
+
+def test_scope_column_exists_on_trade_off_configs(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(trade_off_configs)").fetchall()}
+    assert "scope" in cols
+
+
+def test_scope_column_defaults_to_task(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    conn.execute(
+        """INSERT INTO role_components
+           (id, name, description, content_hash, instance_id, embedding)
+           VALUES ('rc-scope-1', 'test', 'test desc', 'hash-scope-1', 'inst-1', '[]')"""
+    )
+    conn.commit()
+    row = conn.execute("SELECT scope FROM role_components WHERE id = 'rc-scope-1'").fetchone()
+    assert row[0] == "task"
+
+
+def test_primitives_view_includes_scope(tmp_path):
+    conn = sqlite3.connect(tmp_path / "test.db")
+    run_migrations(conn)
+    conn.execute(
+        """INSERT INTO role_components
+           (id, name, description, content_hash, instance_id, embedding)
+           VALUES ('rc-scope-2', 'test', 'test desc', 'hash-scope-2', 'inst-1', '[]')"""
+    )
+    conn.commit()
+    row = conn.execute("SELECT scope FROM primitives WHERE id = 'rc-scope-2'").fetchone()
+    assert row[0] == "task"
