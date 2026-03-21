@@ -12,6 +12,7 @@ Discovery and status tools:
   - agency_status: instance status, task progress, primitive health
 """
 import asyncio
+import atexit
 import json
 import os
 import pathlib
@@ -246,6 +247,35 @@ def _write_toml_default_id(project_id: str) -> None:
 
     with open(config_path, "wb") as f:
         tomli_w.dump(cfg, f)
+
+
+# ---------------------------------------------------------------------------
+# Auto-start — spawn Agency server if not already running
+# ---------------------------------------------------------------------------
+
+_server_proc = None
+
+
+def _ensure_server(base_url: str) -> None:
+    """Start Agency server if not reachable. Registers cleanup on exit."""
+    global _server_proc
+    if _server_proc is not None:
+        return  # Already spawned by us
+
+    from urllib.parse import urlparse
+
+    from agency.utils.autostart import auto_start_server
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8000
+
+    try:
+        _server_proc = auto_start_server(host=host, port=port)
+        if _server_proc is not None:
+            atexit.register(lambda: _server_proc.terminate())
+    except RuntimeError as exc:
+        print(f"Auto-start failed: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +615,7 @@ async def _run_mcp_server():
     token = _read_mcp_token()
 
     if not _check_health(base_url):
-        print(
-            f"Agency server not responding at {base_url}. Start it with: agency serve",
-            file=sys.stderr,
-        )
-        # Continue startup — server may come up later
+        _ensure_server(base_url)
 
     print(f"Agency MCP server started — connecting to API at {base_url}", file=sys.stderr)
 
