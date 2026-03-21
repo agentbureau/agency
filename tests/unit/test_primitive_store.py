@@ -73,3 +73,28 @@ def test_assign_agent_returns_embedding_vector(db_with_primitives):
     assert "embedding_vector" in result
     assert isinstance(result["embedding_vector"], list)
     assert len(result["embedding_vector"]) > 0
+
+
+def test_insert_primitive_accepts_scope_parameter(db):
+    pid = insert_primitive(db, "role_components",
+        description="meta: evaluate agent composition quality",
+        instance_id="i1",
+        scope="meta:assigner")
+    p = get_primitive(db, "role_components", pid)
+    assert p["scope"] == "meta:assigner"
+
+
+def test_insert_primitive_defaults_to_task_scope(db):
+    pid = insert_primitive(db, "role_components",
+        description="write structured reports",
+        instance_id="i1")
+    p = get_primitive(db, "role_components", pid)
+    assert p["scope"] == "task"
+
+
+def test_insert_primitive_rejects_invalid_scope(db):
+    with pytest.raises(ValueError, match="Invalid scope"):
+        insert_primitive(db, "role_components",
+            description="bad scope test",
+            instance_id="i1",
+            scope="invalid")

@@ -16,6 +16,10 @@ TYPE_TO_TABLE = {
     "trade_off_config": "trade_off_configs",
 }
 
+_VALID_SCOPES = frozenset({
+    "task", "meta:assigner", "meta:evaluator", "meta:evolver", "meta:agent_creator"
+})
+
 
 def insert_primitive(
     conn: sqlite3.Connection,
@@ -30,8 +34,14 @@ def insert_primitive(
     domain: str = "[]",
     origin_instance_id: str = AGENTBUREAU_INSTANCE_ID,
     parent_content_hash: str | None = None,
+    scope: str = "task",
 ) -> str:
     assert table in PRIMITIVE_TABLES
+    if scope not in _VALID_SCOPES:
+        raise ValueError(
+            f"Invalid scope '{scope}'. "
+            f"Allowed values: {', '.join(sorted(_VALID_SCOPES))}"
+        )
     pid = new_uuid()
     hash_ = content_hash(description)
     vec = embed(description)
@@ -41,11 +51,11 @@ def insert_primitive(
         f"""INSERT INTO {table}
             (id, name, description, content_hash, quality, domain_specificity, domain,
              origin_instance_id, parent_content_hash,
-             instance_id, client_id, project_id, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             instance_id, client_id, project_id, embedding, scope)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (pid, name, description, hash_, quality, domain_specificity, domain,
          origin_instance_id, parent_content_hash,
-         instance_id, client_id, project_id, json.dumps(vec)),
+         instance_id, client_id, project_id, json.dumps(vec), scope),
     )
     conn.commit()
     return pid
