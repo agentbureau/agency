@@ -44,6 +44,14 @@ def test_assign_agents_batch_returns_packet(db_with_primitives):
     assert "t2" in packet["assignments"]
     assert len(packet["agents"]) >= 1
 
+    # v1.2.3: verify agent_id propagation
+    for ext_id in ("t1", "t2"):
+        assert "agent_id" in packet["assignments"][ext_id]
+
+    for agent_hash, agent_def in packet["agents"].items():
+        assert "agent_id" in agent_def
+        assert "composition_fitness" in agent_def
+
 
 def test_batch_response_includes_agent_id(db_with_primitives):
     """Bug 17a: agent_id (UUID) must be in both assignments and agents dicts."""
