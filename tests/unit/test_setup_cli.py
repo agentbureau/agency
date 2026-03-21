@@ -83,3 +83,101 @@ def test_keypair_rotation_proceeds_with_exact_confirmation_string(tmp_path, monk
         )
     mock_rotate.assert_called_once()
     assert "Cancelled" not in result.output
+
+
+def test_client_setup_non_interactive_updates_only_provided_flags(tmp_path, monkeypatch):
+    """agency client setup with flags updates only those settings, no prompts."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    toml_content = (
+        'instance_id = "inst-1"\n'
+        '[server]\nhost = "127.0.0.1"\nport = 8000\n'
+        '[llm]\nbackend = "claude-code"\nmodel = "claude-sonnet-4-6"\nendpoint = ""\napi_key = ""\n'
+        '[notifications]\ncontact_email = "old@example.com"\n'
+        'oversight_preference = "discretion"\nerror_notification_timeout = 1800\n'
+        '[output]\nattribution = true\n'
+    )
+    with open(str(tmp_path / "agency.toml"), "w") as f:
+        f.write(toml_content)
+
+    runner = CliRunner()
+    # Provide only --oversight and --email; no stdin input
+    result = runner.invoke(client_setup_command, [
+        "--oversight", "review",
+        "--email", "new@example.com",
+    ])
+    assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+    assert "Settings updated" in result.output
+
+    import tomllib as _tomllib
+    with open(str(tmp_path / "agency.toml"), "rb") as f:
+        cfg = _tomllib.load(f)
+    # Updated values
+    assert cfg["notifications"]["oversight_preference"] == "review"
+    assert cfg["notifications"]["contact_email"] == "new@example.com"
+    # Preserved values
+    assert cfg["llm"]["backend"] == "claude-code"
+    assert cfg["notifications"]["error_notification_timeout"] == 1800
+    assert cfg["output"]["attribution"] is True
+    assert cfg["server"]["host"] == "127.0.0.1"
+
+
+def test_client_setup_non_interactive_all_flags(tmp_path, monkeypatch):
+    """agency client setup with all flags completes without any prompts."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    toml_content = (
+        'instance_id = "inst-1"\n'
+        '[server]\nhost = "127.0.0.1"\nport = 8000\n'
+        '[llm]\nbackend = "claude-code"\nmodel = "claude-sonnet-4-6"\nendpoint = ""\napi_key = ""\n'
+        '[notifications]\ncontact_email = "old@example.com"\n'
+        'oversight_preference = "discretion"\nerror_notification_timeout = 1800\n'
+        '[output]\nattribution = true\n'
+    )
+    with open(str(tmp_path / "agency.toml"), "w") as f:
+        f.write(toml_content)
+
+    runner = CliRunner()
+    result = runner.invoke(client_setup_command, [
+        "--backend", "api",
+        "--model", "claude-opus-4-6",
+        "--email", "all@example.com",
+        "--timeout", "600",
+        "--oversight", "review",
+        "--attribution", "off",
+        "--host", "0.0.0.0",
+        "--port", "9000",
+    ])
+    assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+    assert "Settings updated" in result.output
+
+    import tomllib as _tomllib
+    with open(str(tmp_path / "agency.toml"), "rb") as f:
+        cfg = _tomllib.load(f)
+    assert cfg["llm"]["backend"] == "api"
+    assert cfg["llm"]["model"] == "claude-opus-4-6"
+    assert cfg["notifications"]["contact_email"] == "all@example.com"
+    assert cfg["notifications"]["error_notification_timeout"] == 600
+    assert cfg["notifications"]["oversight_preference"] == "review"
+    assert cfg["output"]["attribution"] is False
+    assert cfg["server"]["host"] == "0.0.0.0"
+    assert cfg["server"]["port"] == 9000
+
+
+def test_client_setup_no_flags_enters_interactive_mode(tmp_path, monkeypatch):
+    """Running agency client setup with no flags shows prompts (interactive mode)."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    toml_content = (
+        'instance_id = "inst-1"\n'
+        '[server]\nhost = "127.0.0.1"\nport = 8000\n'
+        '[llm]\nbackend = "claude-code"\nmodel = "claude-sonnet-4-6"\nendpoint = ""\napi_key = ""\n'
+        '[notifications]\ncontact_email = "a@b.com"\n'
+        'oversight_preference = "discretion"\nerror_notification_timeout = 1800\n'
+        '[output]\nattribution = true\n'
+    )
+    with open(str(tmp_path / "agency.toml"), "w") as f:
+        f.write(toml_content)
+
+    runner = CliRunner()
+    result = runner.invoke(client_setup_command, input="\n" * 20)
+    assert result.exit_code == 0
+    assert "Client Setup" in result.output
+    assert "Press enter" in result.output

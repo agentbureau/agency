@@ -211,3 +211,64 @@ def test_step_create_tokens_recovery_when_file_missing(tmp_path, monkeypatch):
     conn.close()
     assert old_row is not None and old_row[0] == 1
     assert not failed
+
+
+def test_init_non_interactive_with_all_flags(tmp_path, monkeypatch):
+    """agency init with all flags completes without any interactive prompts."""
+    state_dir = _make_state_dir(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    runner = CliRunner()
+    with patch("agency.cli.init._run_phase2"):
+        result = runner.invoke(init_command, [
+            "--backend", "api",
+            "--model", "claude-sonnet-4-6",
+            "--endpoint", "https://api.anthropic.com/v1",
+            "--api-key", "sk-test",
+            "--email", "test@example.com",
+            "--timeout", "900",
+            "--oversight", "review",
+            "--attribution", "off",
+            "--skip-primitives",
+            "--no-register-mcp",
+        ])
+    # No input provided — if it prompted, CliRunner would fail or hang
+    assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+    # Verify config was written
+    import tomllib as _tomllib
+    toml_path = os.path.join(state_dir, "agency.toml")
+    assert os.path.exists(toml_path)
+    with open(toml_path, "rb") as f:
+        cfg = _tomllib.load(f)
+    assert cfg["llm"]["backend"] == "api"
+    assert cfg["llm"]["api_key"] == "sk-test"
+    assert cfg["notifications"]["contact_email"] == "test@example.com"
+    assert cfg["notifications"]["error_notification_timeout"] == 900
+    assert cfg["notifications"]["oversight_preference"] == "review"
+    assert cfg["output"]["attribution"] is False
+
+
+def test_init_non_interactive_partial_flags(tmp_path, monkeypatch):
+    """agency init with partial flags uses provided values without prompting for them."""
+    state_dir = _make_state_dir(tmp_path)
+    monkeypatch.setenv("AGENCY_STATE_DIR", state_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    runner = CliRunner()
+    with patch("agency.cli.init._run_phase2"):
+        result = runner.invoke(init_command, [
+            "--backend", "claude-code",
+            "--email", "partial@example.com",
+            "--skip-primitives",
+            "--no-register-mcp",
+        ])
+    assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+    import tomllib as _tomllib
+    toml_path = os.path.join(state_dir, "agency.toml")
+    with open(toml_path, "rb") as f:
+        cfg = _tomllib.load(f)
+    assert cfg["notifications"]["contact_email"] == "partial@example.com"
+    # Default values should still be applied
+    assert cfg["notifications"]["oversight_preference"] == "discretion"
+    assert cfg["output"]["attribution"] is True

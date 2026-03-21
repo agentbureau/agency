@@ -310,8 +310,11 @@ def _run_phase1(state_dir: str, toml_path: str, cfg: dict,
     if "output" in cfg:
         attr = "on" if cfg["output"].get("attribution", True) else "off"
         wiz_status(f"Output config already set (attribution: {attr}). Skipping.")
-    elif non_interactive and _is_flag_provided(ctx, "attribution"):
-        attr_val = attribution.lower() != "off"
+    elif non_interactive:
+        if _is_flag_provided(ctx, "attribution"):
+            attr_val = attribution.lower() != "off"
+        else:
+            attr_val = True  # default: attribution on
         cfg["output"] = {"attribution": attr_val}
         _write_toml(cfg, toml_path)
         wiz_status(f"Attribution {'enabled' if attr_val else 'disabled'}")
