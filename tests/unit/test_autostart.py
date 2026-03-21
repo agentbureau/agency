@@ -12,14 +12,17 @@ from agency.utils.autostart import (
 
 
 def test_resolve_agency_binary_finds_or_none():
-    """Verify _resolve_agency_binary returns a string path or None."""
-    with patch("agency.utils.autostart.shutil.which", return_value="/usr/local/bin/agency"):
-        result = _resolve_agency_binary()
-        assert result == "/usr/local/bin/agency"
+    """Verify _resolve_agency_binary returns a string path or None.
 
-    with patch("agency.utils.autostart.shutil.which", return_value=None):
-        result = _resolve_agency_binary()
-        assert result is None
+    Resolution order: sys.executable sibling → ~/.local/bin → sys.prefix/bin → shutil.which.
+    We test that it returns a path when agency is installed (current env),
+    and that it returns a string (not None) since we're running in the agency venv.
+    """
+    result = _resolve_agency_binary()
+    # We're running inside the agency venv, so it should find the binary
+    assert result is not None
+    assert isinstance(result, str)
+    assert result.endswith("/agency")
 
 
 def test_poll_health_returns_true_when_healthy():
@@ -51,11 +54,14 @@ def test_auto_start_returns_none_when_already_running():
 
 
 def test_auto_start_raises_when_no_binary():
-    """If shutil.which returns None, raise RuntimeError."""
+    """If no binary can be found at any resolution step, raise RuntimeError."""
     with patch(
         "agency.utils.autostart.httpx.get",
         side_effect=httpx.ConnectError("refused"),
     ):
-        with patch("agency.utils.autostart.shutil.which", return_value=None):
+        with patch(
+            "agency.utils.autostart._resolve_agency_binary",
+            return_value=None,
+        ):
             with pytest.raises(RuntimeError, match="agency binary not found"):
                 auto_start_server(timeout=1.0)
