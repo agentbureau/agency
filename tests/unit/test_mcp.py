@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 from agency.cli.mcp import (
     _read_toml_config,
     _resolve_project_id,
+    _maybe_inject_onboarding,
     _tool_agency_assign,
     _tool_agency_evaluator,
     _tool_agency_submit_evaluation,
@@ -584,3 +585,62 @@ def test_status_tool_connection_error():
     assert result["status"] == "error"
     assert result["error_type"] == "transient"
     assert result["code"] is None
+
+
+# ---------------------------------------------------------------------------
+# _maybe_inject_onboarding
+# ---------------------------------------------------------------------------
+
+
+def test_onboarding_fires_when_no_marker(tmp_path, monkeypatch):
+    """Onboarding field injected when marker file does not exist."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    marker = tmp_path / ".onboarded"
+    assert not marker.exists()
+
+    result_json = json.dumps({"status": "ok", "data": "hello"})
+    output = _maybe_inject_onboarding(result_json)
+    parsed = json.loads(output)
+
+    assert "first_run_onboarding" in parsed
+    assert parsed["first_run_onboarding"]["skill_name"] == "getting-started-with-agency"
+    assert "message" in parsed["first_run_onboarding"]
+    assert "skip_instruction" in parsed["first_run_onboarding"]
+    # Marker file should now exist
+    assert marker.exists()
+
+
+def test_onboarding_does_not_fire_when_marker_exists(tmp_path, monkeypatch):
+    """Onboarding field omitted when marker file already exists."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    marker = tmp_path / ".onboarded"
+    marker.touch()
+
+    result_json = json.dumps({"status": "ok", "data": "hello"})
+    output = _maybe_inject_onboarding(result_json)
+    parsed = json.loads(output)
+
+    assert "first_run_onboarding" not in parsed
+
+
+def test_onboarding_creates_marker_only_once(tmp_path, monkeypatch):
+    """Second call after first injection does not inject again."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+
+    result_json = json.dumps({"status": "ok"})
+
+    # First call — should inject and create marker
+    output1 = json.loads(_maybe_inject_onboarding(result_json))
+    assert "first_run_onboarding" in output1
+
+    # Second call — marker exists, should not inject
+    output2 = json.loads(_maybe_inject_onboarding(result_json))
+    assert "first_run_onboarding" not in output2
+
+
+def test_onboarding_preserves_original_on_bad_json(tmp_path, monkeypatch):
+    """Invalid JSON input is returned unchanged."""
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    bad_json = "not valid json {"
+    output = _maybe_inject_onboarding(bad_json)
+    assert output == bad_json

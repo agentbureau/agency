@@ -119,11 +119,12 @@ def create_app() -> FastAPI:
             version = "dev"
         return {"status": "ok", "version": version}
 
-    from agency.api.routes import tasks, projects, primitives, evolution, status
+    from agency.api.routes import tasks, projects, primitives, evolution, status, triage
     app.include_router(tasks.router)
     app.include_router(projects.router)
     app.include_router(primitives.router)
     app.include_router(evolution.router)
     app.include_router(status.router)
+    app.include_router(triage.router)
 
     return app

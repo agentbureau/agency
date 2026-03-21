@@ -16,13 +16,13 @@ def db(tmp_path):
     conn = sqlite3.connect(tmp_path / "agency.db")
     run_migrations(conn)
     insert_primitive(conn, "role_components",
-                     description="evaluate task quality",
+                     description="grade and evaluate submission quality and completeness",
                      instance_id="inst-1")
     insert_primitive(conn, "desired_outcomes",
-                     description="produce a quality assessment",
+                     description="produce a detailed grading assessment of the submission",
                      instance_id="inst-1")
     insert_primitive(conn, "trade_off_configs",
-                     description="rigour over speed",
+                     description="rigour over speed when grading submissions",
                      instance_id="inst-1")
     return conn
 

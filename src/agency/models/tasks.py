@@ -45,6 +45,13 @@ class AgentDefinition(BaseModel):
     composition_fitness: dict | None = None
 
 
+class ProjectVerification(BaseModel):
+    project_id: str
+    project_name: str | None
+    prompt: str
+
+
 class BatchAssignResponse(BaseModel):
     assignments: dict  # external_id -> {agency_task_id, agent_hash}
     agents: dict       # agent_hash -> AgentDefinition
+    project_verification: ProjectVerification | None = None
