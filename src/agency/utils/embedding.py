@@ -3,6 +3,11 @@ import logging
 import math
 import os
 
+# Suppress HF warnings at import time — before any huggingface_hub import
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -12,8 +17,6 @@ def suppress_hf_warnings():
 
     Shared utility — call before any sentence-transformers import.
     """
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     logging.getLogger("transformers").setLevel(logging.ERROR)
     logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
     logging.getLogger("huggingface_hub").setLevel(logging.ERROR)

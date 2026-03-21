@@ -8,7 +8,7 @@ import click
 
 BUNDLED_SKILLS = [
     "agency-primitive-extraction",
-    "getting-started-with-agency",
+    "agency-getting-started",
     "agency-composition-config",
 ]
 

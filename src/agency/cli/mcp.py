@@ -197,7 +197,7 @@ def _maybe_inject_onboarding(result_json: str) -> str:
                 "Agency is set up and working. Would you like a quick "
                 "walkthrough of how to use it?"
             ),
-            "skill_name": "getting-started-with-agency",
+            "skill_name": "agency-getting-started",
             "skip_instruction": (
                 "To skip, just proceed with your task. "
                 "This message won't appear again."

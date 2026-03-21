@@ -603,7 +603,7 @@ def test_onboarding_fires_when_no_marker(tmp_path, monkeypatch):
     parsed = json.loads(output)
 
     assert "first_run_onboarding" in parsed
-    assert parsed["first_run_onboarding"]["skill_name"] == "getting-started-with-agency"
+    assert parsed["first_run_onboarding"]["skill_name"] == "agency-getting-started"
     assert "message" in parsed["first_run_onboarding"]
     assert "skip_instruction" in parsed["first_run_onboarding"]
     # Marker file should now exist
