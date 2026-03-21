@@ -117,7 +117,7 @@ def batch_assign(project_id: str, req: BatchAssignRequest, request: Request):
             set_task_composition(
                 request.app.state.db,
                 task_id_map[ext_id],
-                assignment["agent_hash"],
+                assignment["agent_id"],
             )
 
     return packet

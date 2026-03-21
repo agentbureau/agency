@@ -141,6 +141,14 @@ def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
                VALUES (?, ?, ?, ?, ?)""",
             (eid, task_id, data, "agency_instance", content_hash(data)),
         )
+        # Confirm immediately for local instance evaluations (canon §4.3).
+        # Inlined into the same transaction — no crash window.
+        # When home_pool destination is added (v2+), guard with:
+        #   if destination == "agency_instance":
+        conn.execute(
+            "UPDATE pending_evaluations SET confirmed = 1, confirmed_at = datetime('now') WHERE id = ?",
+            (eid,),
+        )
         if jti:
             conn.execute(
                 "INSERT OR IGNORE INTO consumed_jwts (jwt_id, task_id) VALUES (?, ?)",

@@ -169,3 +169,29 @@ def add_template_id_to_agents(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE agents ADD COLUMN template_id TEXT NOT NULL DEFAULT 'default'"
     )
+
+
+@migration
+def fix_v123_persistence_bugs(conn: sqlite3.Connection) -> None:
+    """v1.2.3 data migration: fix bug 17a (SHA-256→UUID in tasks) and bug 17b (confirm evaluations)."""
+    # Bug 17a: tasks.agent_composition_id has SHA-256 content_hash instead of UUID.
+    # Convert by looking up agents.id via agents.content_hash.
+    # length > 36 guard: UUIDs are 36 chars, SHA-256 are 64 chars.
+    conn.execute("""
+        UPDATE tasks
+        SET agent_composition_id = (
+            SELECT a.id FROM agents a
+            WHERE a.content_hash = tasks.agent_composition_id
+        )
+        WHERE agent_composition_id IS NOT NULL
+          AND length(agent_composition_id) > 36
+    """)
+
+    # Bug 17b: agency_instance evaluations never confirmed.
+    # Retroactively confirm all existing instance evaluations.
+    conn.execute("""
+        UPDATE pending_evaluations
+        SET confirmed = 1, confirmed_at = datetime('now')
+        WHERE destination = 'agency_instance'
+          AND confirmed = 0
+    """)

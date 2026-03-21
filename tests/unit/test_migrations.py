@@ -164,3 +164,58 @@ def test_projects_has_all_new_columns(tmp_path):
                 "llm_provider", "llm_model", "llm_api_key", "homepool_retry_max_interval",
                 "permission_block", "attribution"}
     assert expected.issubset(cols)
+
+
+def test_migration_fixes_agent_composition_id_sha256_to_uuid():
+    """Bug 17a data migration: SHA-256 content_hash → UUID agent_id."""
+    conn = sqlite3.connect(":memory:")
+    run_migrations(conn)
+
+    # Simulate the bug state: agent exists, task has SHA-256 instead of UUID
+    sha256_hash = "a" * 64
+    conn.execute(
+        """INSERT INTO agents (id, role_component_ids, content_hash, instance_id, template_id)
+           VALUES (?, '["r1"]', ?, 'inst-1', 'default')""",
+        ("019d-uuid-agent", sha256_hash),
+    )
+    conn.execute(
+        """INSERT INTO tasks (id, description, agent_composition_id)
+           VALUES ('task-1', 'test', ?)""",
+        (sha256_hash,),
+    )
+    conn.commit()
+
+    # Call the migration function directly (run_migrations already ran it on empty data)
+    from agency.db.schema import fix_v123_persistence_bugs
+    fix_v123_persistence_bugs(conn)
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT agent_composition_id FROM tasks WHERE id = 'task-1'"
+    ).fetchone()
+    assert row[0] == "019d-uuid-agent", f"Expected UUID, got {row[0]}"
+
+
+def test_migration_confirms_existing_instance_evaluations():
+    """Bug 17b data migration: confirm all agency_instance evaluations."""
+    conn = sqlite3.connect(":memory:")
+    run_migrations(conn)
+
+    # Insert unconfirmed instance evaluation (the bug state)
+    conn.execute(
+        """INSERT INTO pending_evaluations
+           (id, task_id, evaluator_data, destination, content_hash, confirmed)
+           VALUES ('eval-1', 'task-1', '{}', 'agency_instance', 'hash1', 0)"""
+    )
+    conn.commit()
+
+    # Call the migration function directly
+    from agency.db.schema import fix_v123_persistence_bugs
+    fix_v123_persistence_bugs(conn)
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT confirmed, confirmed_at FROM pending_evaluations WHERE id = 'eval-1'"
+    ).fetchone()
+    assert row[0] == 1, "evaluation should be confirmed after migration"
+    assert row[1] is not None, "confirmed_at should be set"

@@ -167,6 +167,8 @@ def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
             "content_hash": canonical["content_hash"],
             "template_id": canonical["template_id"],
             "primitive_ids": canonical["primitive_ids"],
+            "agent_id": canonical["agent_id"],
+            "composition_fitness": None,  # populated by Track C1
         }
 
         for idx in cluster:
@@ -175,6 +177,7 @@ def assign_agents_batch(tasks: list, db, cfg: dict) -> dict:
             assignments[ext_id] = {
                 "agency_task_id": results[idx].get("task_id", ext_id),
                 "agent_hash": agent_hash,
+                "agent_id": results[idx]["agent_id"],
             }
 
     return {"assignments": assignments, "agents": agents}
