@@ -194,3 +194,33 @@ def test_deduplication_shares_composition(tmp_path, monkeypatch):
                 (task_id,),
             ).fetchone()
             assert row[0] == id1, "Both tasks should have same agent_composition_id"
+
+
+def test_single_task_route_regression(tmp_path, monkeypatch):
+    """§1.1 AC: single-task route (GET /tasks/{task_id}/agent) unchanged after batch fix."""
+    _setup_env(tmp_path, monkeypatch)
+    app = create_app()
+    with TestClient(app) as c:
+        auth = _make_auth(tmp_path, app)
+
+        # Create task via the task route (not batch)
+        r = c.post("/tasks", json={
+            "task_description": "implement a binary search",
+            "output_structure": "structured",
+            "output_format": "json",
+        }, headers=auth)
+        assert r.status_code == 201
+        task_id = r.json()["task_id"]
+
+        # Assign agent via single-task route
+        r = c.get(f"/tasks/{task_id}/agent", headers=auth)
+        assert r.status_code == 200
+        agent = r.json()
+        assert agent["agent_id"] is not None
+        assert len(agent["content_hash"]) == 64
+
+        # Verify composition is linked
+        r = c.get(f"/tasks/{task_id}", headers=auth)
+        assert r.status_code == 200
+        assert r.json()["agent_hash"] is not None
+        assert r.json()["state"] == "assigned"
