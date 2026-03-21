@@ -1,68 +1,74 @@
 # Getting Started with Agency
 
-Agency is a prompt composer. It builds specialised AI agents from primitives — small, reusable building blocks — so that each task gets an agent tailored to it, rather than a generic LLM.
+This is an interactive walkthrough. Follow each step in order.
 
-## The 3-step workflow
+## Step 1 — Try Agency with a sample task
 
-1. **Assign** — call `agency_assign` with a task description. Agency selects primitives and composes an agent. You get back a `rendered_prompt`.
-2. **Execute** — adopt the `rendered_prompt` as your operating instructions and do the work.
-3. **Evaluate** — call `agency_evaluator` to get an evaluation prompt, assess your own output against it, then call `agency_submit_evaluation` with the result.
+Display this to the user, then wait for their response:
 
-This loop is how Agency learns. Evaluations feed back into primitive selection, so compositions improve over time.
+> Using Agency is easy and fits into your workflow with Claude. All you have to do is ask Claude to use Agency when doing any task. For instance:
+>
+> "Hey Claude, please use Agency to read the Agency specification document, then write me a 2-paragraph summary that 1) explains what Agency is and why I should use it, 2) explains how I use Agency with Claude Code, and 3) gives me some examples of tasks I can use Agency for."
+>
+> Want to try that? (Y/N)
 
-## What are primitives?
+If the user says Y:
 
-Agency composes agents from three types of primitive:
+1. Tell the user: "I'm sending that prompt to Agency's assigner now. The assigner reads your task description, selects the best-matching primitives from its library, and composes a specialised agent for this specific task."
+2. Call `agency_assign` with the task description from the quoted prompt above.
+3. Show the user the composed agent's key sections from the rendered prompt (Role, What success looks like, Trade-offs).
+4. Execute the task yourself using the full rendered prompt as your operating instructions.
+5. Display the output to the user.
 
-- **Role components** — capabilities and expertise (e.g. "technical writer," "code reviewer")
-- **Desired outcomes** — success criteria for the task (e.g. "output is actionable," "covers edge cases")
-- **Trade-off configurations** — decision rules for resolving tensions (e.g. "favour thoroughness over speed")
+If the user says N, skip to Step 2.
 
-A starter set ships with Agency. The pool grows as you use it — the evolver proposes new primitives based on evaluation patterns.
+## Step 2 — Try Agency with the user's own task
 
-## What makes this different from just using an LLM?
+Display this to the user, then wait for their input:
 
-- **Performance history** — Agency tracks which compositions worked well for which task types
-- **Feedback loop** — evaluations improve future compositions automatically
-- **Separation of concerns** — "what should this agent be?" is distinct from "do the work"
+> Now try it with something you actually need done. Describe your task and I'll send it to Agency's assigner, just like I did with the sample. Be as detailed as possible about what output you want.
+>
+> Just type: "Claude, please use Agency to compose an agent to do X"
 
-In testing, Agency-composed agents scored 55/60 vs 26/60 for general-purpose prompts on a 12-dimension evaluation.
+When the user provides their task:
 
-## Try it now
+1. Tell the user: "Sending your task description to the assigner now — it will select primitives and compose an agent tailored to this specific task."
+2. Call `agency_assign` with the user's task description.
+3. Show the user the composed agent's key sections from the rendered prompt.
+4. Execute the task yourself using the full rendered prompt as your operating instructions.
+5. Display the output to the user.
 
-Want to see it in action? Here is a simple demo:
+## Step 3 — Evaluate the output
 
-1. Call `agency_assign` with a task like: `{"external_id": "demo-1", "description": "Write a concise summary of what Agency does in 3 sentences."}`
-2. Look at the `rendered_prompt` in the response — that is your composed agent
-3. Execute the task following that prompt
-4. Call `agency_evaluator` with the `agency_task_id` from the assign response
-5. Evaluate your output, then call `agency_submit_evaluation`
+Display this to the user:
 
-## Make Agency your default
+> The final step in Agency is evaluation. When you evaluate an agent's output, Agency learns which compositions work well for which tasks. Over time, this makes compositions better — agents get more precisely tailored to the work. I'll evaluate the output from your task now.
 
-Add this to your project's `CLAUDE.md` to route all work through Agency:
+1. Call `agency_evaluator` with the `agency_task_id` from the user's task (Step 2).
+2. Evaluate the output against the evaluator prompt's criteria.
+3. Call `agency_submit_evaluation` with the evaluation.
+4. Show the user the evaluation result and score.
+
+## Step 4 — Close
+
+Display:
+
+> That's all there is to it! We hope you'll find Agency helpful.
+>
+> **Make Agency your default.** Would you like me to update your project's CLAUDE.md to route all work through Agency automatically? (Y/N)
+
+If Y: Add the following line to the project's CLAUDE.md file:
 
 ```
 Always use agency_assign before spawning subagents or doing work directly.
 ```
 
-This ensures every task gets a tailored composition rather than a generic prompt.
+Then tell the user: "Done — Agency is now your default for all tasks in this project."
 
-## Customise composition rules
+If N: Tell the user: "No problem. You can always ask me to set this up later."
 
-Agency's composition behaviour is controlled by `~/.agency/composition-rules.csv`. You can edit it conversationally — run `/agency-composition-config` for a guided walkthrough.
+Then display:
 
-Changes to the composition config take effect on the next `agency_assign` call (no restart needed).
-
-## Quick reference
-
-| Tool | Purpose |
-|---|---|
-| `agency_assign` | Compose agents for tasks, get prompts |
-| `agency_evaluator` | Get evaluation prompt + callback JWT |
-| `agency_submit_evaluation` | Submit evaluation results |
-| `agency_get_task` | Check task state and composition |
-| `agency_list_projects` | List all projects |
-| `agency_create_project` | Create a new project |
-| `agency_status` | Instance health and task progress |
-| `agency_triage` | Lightweight primitive matching without full composition |
+> **Check your instance** any time with `agency_status` — it shows your projects, task progress, and primitive pool health.
+>
+> **Re-run this walkthrough** any time with `/agency-getting-started`.
