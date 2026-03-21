@@ -136,26 +136,6 @@ Multiple domains: comma-separated in CSV, stored as JSON array on ingest.
 
 `content_hash`, `id`, `embedding`, `permission_block`, `instance_id` are computed or assigned at install time — not in CSV.
 
-## File locations and versioning
-
-**Authoring location (source of truth):**
-`primitives/starter.csv`
-
-**Repo mirror (stable URL, fetched by `agency primitives update`):**
-`primitives/starter.csv`
-
-`primitives/starter.csv` is always the current version. When updating:
-1. Rename the current `starter.csv` to `starter_DDMMYYYY.csv` (date being replaced) in both locations
-2. Write the new `starter.csv` to the authoring location
-3. Copy both files to the repo:
-   ```
-   cp primitives/starter.csv primitives/starter.csv
-   cp primitives/starter_DDMMYYYY.csv primitives/
-   ```
-4. Commit and push from the repo
-
-Full mirroring rules: see `agency-project-conventions.md` § Starter CSV mirroring.
-
 ## Anti-patterns
 
 | Pattern | Problem |
@@ -171,5 +151,5 @@ Full mirroring rules: see `agency-project-conventions.md` § Starter CSV mirrori
 
 ## Reference
 
-Full design philosophy: `agency design/agency primitives canon.md`
-Business model context: `agency design/businessmodel-standalone-agency.md`
+Full design philosophy: see the Agency primitives design canon.
+Business model context: see the Agency standalone business model document.
