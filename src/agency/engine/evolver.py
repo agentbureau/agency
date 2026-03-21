@@ -122,7 +122,7 @@ async def llm_variation(
 
     # Check if this description already exists
     existing = find_similar(db, "role_components", new_desc, limit=1)
-    if existing and existing[0]["score"] > 0.97:
+    if existing and existing[0]["similarity"] > 0.97:
         new_rc_id = existing[0]["id"]
     else:
         new_rc_id = insert_primitive(

@@ -74,16 +74,25 @@ def find_similar(
     table: str,
     query: str,
     limit: int = 10,
+    scope: str | None = "task",
 ) -> list[dict]:
-    """Brute-force cosine similarity search."""
+    """Brute-force cosine similarity search, filtered by scope."""
     query_vec = embed(query)
-    rows = conn.execute(f"SELECT id, description, embedding FROM {table}").fetchall()
+    if scope is not None:
+        rows = conn.execute(
+            f"SELECT id, name, description, embedding FROM {table} WHERE scope = ?",
+            (scope,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id, name, description, embedding FROM {table}"
+        ).fetchall()
     scored = []
     for row in rows:
-        pid, desc, emb_json = row
+        pid, name, desc, emb_json = row
         if emb_json:
             vec = json.loads(emb_json)
-            scored.append((cosine_similarity(query_vec, vec), pid, desc, vec))
+            scored.append((cosine_similarity(query_vec, vec), pid, name, desc, vec))
     scored.sort(reverse=True)
-    return [{"id": pid, "description": desc, "score": score, "embedding": vec}
-            for score, pid, desc, vec in scored[:limit]]
+    return [{"id": pid, "name": name, "description": desc, "similarity": sim, "embedding": vec}
+            for sim, pid, name, desc, vec in scored[:limit]]
