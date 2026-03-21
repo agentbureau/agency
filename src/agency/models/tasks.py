@@ -41,6 +41,8 @@ class AgentDefinition(BaseModel):
     content_hash: str
     template_id: str
     primitive_ids: dict
+    agent_id: str
+    composition_fitness: dict | None = None
 
 
 class BatchAssignResponse(BaseModel):
