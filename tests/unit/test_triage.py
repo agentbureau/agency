@@ -91,7 +91,7 @@ def test_triage_recommendation_compose_when_strong_match(tmp_path, monkeypatch):
         body = r.json()
         # The exact same text should produce a very high similarity match
         assert body["recommendation"] == "compose"
-        assert "above 0.5 similarity" in body["reasoning"]
+        assert "above 0.35 similarity" in body["reasoning"]
 
 
 def test_triage_recommendation_skip_when_no_strong_match(tmp_path, monkeypatch):
@@ -110,7 +110,7 @@ def test_triage_recommendation_skip_when_no_strong_match(tmp_path, monkeypatch):
         # can be unpredictable — if this flakes, the primitives and query
         # need further divergence)
         if body["recommendation"] == "skip-safe":
-            assert "No primitive exceeded 0.5 similarity" in body["reasoning"]
+            assert "No primitive exceeded 0.35 similarity" in body["reasoning"]
         # If embedding model happens to match above threshold, that's still valid
 
 
