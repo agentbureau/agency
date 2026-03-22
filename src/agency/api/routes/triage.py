@@ -81,10 +81,10 @@ def triage(req: TriageRequest, request: Request):
         if has_strong_match:
             n_above = sum(1 for r in matched if r.get("similarity", 0) >= METAPRIMITIVE_SIMILARITY_THRESHOLD)
             recommendation = "compose"
-            reasoning = f"Matched {n_above} primitive(s) above 0.5 similarity; strongest match: '{strongest_name}' at {strongest_sim}."
+            reasoning = f"Matched {n_above} primitive(s) above {METAPRIMITIVE_SIMILARITY_THRESHOLD} similarity; strongest match: '{strongest_name}' at {strongest_sim}."
         else:
             recommendation = "skip-safe"
-            reasoning = f"No primitive exceeded 0.5 similarity; strongest match: '{strongest_name}' at {strongest_sim}. Composition would fill slots with low-relevance primitives."
+            reasoning = f"No primitive exceeded {METAPRIMITIVE_SIMILARITY_THRESHOLD} similarity; strongest match: '{strongest_name}' at {strongest_sim}. Composition would fill slots with low-relevance primitives."
     else:
         recommendation = "skip-safe"
         reasoning = "No primitives in store."
