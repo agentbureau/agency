@@ -2,6 +2,8 @@
 
 **A self-hosted engine for composing, evaluating, and evolving AI agents.**
 
+[The conceptual model behind Agency](https://vaughntan.org/agentconstruct) — why agent composability matters and where the idea comes from.
+
 ## In a nutshell
 Agency is a tool for building AI agents on the fly from small, readable, natural-language building blocks. When something about an agent doesn’t work, you fix the specific part that’s broken instead of rewriting the whole thing — and every fix makes every future agent better. It fits into your existing AI coding workflow as a background service you interact with in conversation with Claude Code.
 
