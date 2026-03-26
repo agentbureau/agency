@@ -677,6 +677,14 @@ async def _run_mcp_server():
                                         "items": {"type": "string"},
                                         "description": "Optional list of expected outputs.",
                                     },
+                                    "output_format": {
+                                        "type": "string",
+                                        "description": "Output format for the composed agent. Default: 'markdown'. Use 'json' only when the output must be machine-parsed.",
+                                    },
+                                    "output_structure": {
+                                        "type": "string",
+                                        "description": "Output structure hint. Default: 'structured'.",
+                                    },
                                 },
                                 "required": ["external_id", "description"],
                             },

@@ -149,7 +149,7 @@ def reconstruct_rendered_prompt(db, task_id: str) -> dict:
         trade_off_config=trade_off_config,
         task_description=task.get("description", ""),
         output_structure=task.get("output_structure", "structured"),
-        output_format=task.get("output_format", "json"),
+        output_format=task.get("output_format", "markdown"),
         clarification_behaviour=task.get("clarification_behaviour", "ask"),
     )
 

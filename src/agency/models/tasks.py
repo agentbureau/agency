@@ -30,6 +30,8 @@ class BatchTaskRequest(BaseModel):
     description: str
     skills: list[str] = []
     deliverables: list[str] = []
+    output_format: str | None = None
+    output_structure: str | None = None
 
 
 class BatchAssignRequest(BaseModel):

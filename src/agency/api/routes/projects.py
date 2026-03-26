@@ -95,6 +95,8 @@ def batch_assign(project_id: str, req: BatchAssignRequest, request: Request):
             description=task.description,
             external_id=task.external_id,
             project_id=project_id,
+            output_format=task.output_format,
+            output_structure=task.output_structure,
         )
         if task.external_id:
             task_id_map[task.external_id] = tid
