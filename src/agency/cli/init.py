@@ -221,7 +221,7 @@ Setup is not yet complete.
 
 Run 'agency init' again to finish Phase 2, which will:
   - Start the Agency server and initialise the database
-  - Download the embedding model (~80MB)
+  - Download the embedding model (~1.4GB)
   - Install the starter primitive set
   - Create your first project
   - Create API tokens for your integrations

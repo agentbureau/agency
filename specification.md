@@ -489,7 +489,7 @@ Supports `--non-interactive` mode: when any flag is passed on the command line, 
 | Step | What | Input |
 |---|---|---|
 | 2.1 | Initialise database (start server, run migrations, stop) | Automatic |
-| 2.2 | Download embedding model (`all-MiniLM-L6-v2`, ~80MB) | Automatic |
+| 2.2 | Download embedding model (`MongoDB/mdbr-leaf-mt-asym`, ~1.4GB) | Automatic |
 | 2.3 | Install starter primitives (fetch CSV from GitHub — auto-download on first install) | Automatic |
 | 2.4 | Create first project (runs project creation wizard) | User input |
 | 2.5 | Create integration tokens (MCP, CLI, Superpowers, Workgraph) | Automatic |
@@ -652,7 +652,7 @@ Uses Python's standard library `smtplib` with TLS. Configured in `agency.toml [s
 | API framework | FastAPI |
 | Storage | SQLite |
 | Vector storage | sqlite-vec |
-| Embedding model | `sentence-transformers all-MiniLM-L6-v2` (local, CPU-only) |
+| Embedding model | `MongoDB/mdbr-leaf-mt-asym` (asymmetric, local, CPU-only) |
 | JWT library | `pyjwt` with `cryptography` backend (EdDSA signing) |
 | MCP | `mcp>=1.26.0` (Anthropic MCP Python SDK) |
 | Deployment | pip install (`agency-engine`) |

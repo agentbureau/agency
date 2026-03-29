@@ -120,10 +120,14 @@ async def llm_variation(
     new_desc = await llm_client.complete(prompt)
     new_desc = new_desc.strip()
 
-    # Check if this description already exists
-    existing = find_similar(db, "role_components", new_desc, limit=1)
-    if existing and existing[0]["similarity"] > 0.97:
-        new_rc_id = existing[0]["id"]
+    # Check if this exact description already exists (by content hash)
+    from agency.utils.hashing import content_hash
+    desc_hash = content_hash(new_desc)
+    existing_row = db.execute(
+        "SELECT id FROM role_components WHERE content_hash = ?", (desc_hash,)
+    ).fetchone()
+    if existing_row:
+        new_rc_id = existing_row[0]
     else:
         new_rc_id = insert_primitive(
             db, "role_components", description=new_desc, instance_id=instance_id
