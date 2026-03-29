@@ -1,16 +1,22 @@
-# Agency — specification v1.2.3
-*2026-03-22*
+# Agency — specification v1.2.4
+*2026-03-30*
 
-## Getting started
+## Setting up Agency for the first time
 
-Install Agency, then run the setup wizard:
+Tell Claude Code:
+
+> "Install and set up Agency from github.com/agentbureau/agency"
+
+Claude will run the install, setup wizard, and MCP registration. Once complete, Agency tools (`agency_assign`, `agency_evaluator`, `agency_submit_evaluation`, etc.) are available natively in Claude Code.
+
+For manual installation:
 
 ```bash
 pipx install --python python3.13 agency-engine
 agency init
 ```
 
-Once setup completes, open Claude Code and use the skill `/agency-getting-started` for an interactive walkthrough of the Agency workflow: composing agents, executing tasks, and submitting evaluations.
+The `/agency-getting-started` skill provides an interactive walkthrough of the full workflow: composing agents, executing tasks, and submitting evaluations.
 
 ---
 
@@ -18,13 +24,9 @@ Once setup completes, open Claude Code and use the skill `/agency-getting-starte
 
 Agency is a standalone service for composing, assigning, evaluating, and evolving AI agents. It is released under Elastic License 2.0. This licence permits self-hosting for internal use without restriction. The one thing it does not permit is offering Agency as a managed or hosted service commercially. If you are running Agency for your own organisation's tasks, the licence does not affect you.
 
-Agency does not execute tasks. It composes and assigns agent descriptions; the task manager executes tasks using those descriptions. Agency works with any task management system.
+Agency does not execute tasks. It composes and assigns agent descriptions; the task manager executes tasks using those descriptions. Agency works with any task management system, and Claude Code (which manages tasks too).
 
-v1.2.0 adds native MCP integration for Claude Code, Ed25519 authentication, token management, the permission model, a two-phase setup wizard, instance/project configuration hierarchy, agent output attribution, primitive quality scores and distribution, and SMTP error notification.
-
-v1.2.2 adds CLI task commands (`agency task {assign,evaluator,submit,get}`), a shared client module, a new `GET /tasks/{task_id}` API endpoint with re-rendering pipeline, the `agency_get_task` MCP tool, `error_type` in all error responses, `task_ids` summary block in assign responses, and `status: "ok"` across all success responses.
-
-v1.2.3 adds metaprimitives (primitives that govern Agency's own functional agents), a triage endpoint (`POST /triage`), MCP auto-start for zero-terminal operation, non-interactive setup flags, first-run onboarding, setup wizard improvements, critical persistence bug fixes, and two new bundled skills (`agency-getting-started`, `agency-composition-config`).
+v1.2.4 upgrades the embedding model to `MongoDB/mdbr-leaf-mt-asym` (asymmetric retrieval, +0.264 average fitness improvement), adds task-type pre-classification (12-type keyword classifier with two-pass retrieval), a composition fitness floor at 0.39 (advisory, not gate), a three-signal triage advisory (task type + fitness + method absence), evaluation cascade from compositions to individual primitives, experiment tracking (assignment candidate persistence), multi-dimensional evaluation storage, primitive lineage tracking (parent_ids, generation, created_by), explore/exploit assignment counting, a CLI primitive import command, an `agency_update_primitives` MCP tool, and status file operationalisation (version notifications, announcement tracking, primitives update advisory).
 
 ---
 
@@ -40,7 +42,18 @@ Agency stores three types of primitives independently:
 
 These are stored as independent, uncommitted objects. Pre-composed agents are a cache on top of this primitive store, not the ground truth.
 
-Each primitive carries a quality score (integer, 0-100). The assigner only selects primitives with quality > 90 for new compositions. Quality scores are set at primitive creation time and updated by `agency primitives update` from the upstream starter CSV.
+Each primitive carries a quality score (integer, 0-100). The assigner only selects primitives with quality > 90 for new compositions. Quality scores are set at primitive creation time and updated by `agency primitives update` from the upstream starter CSV. Quality scores are currently defaulted to 100; when evolution tools are launched (probably in v1.3.0), primitive quality scores will begin to change based on the performance of agents built with those primitives.
+
+#### Lineage (v1.2.4)
+
+Each primitive tracks its derivation history:
+
+- `parent_ids` — JSON list of parent primitive content hashes (NULL for originals). Supports multi-parent crossover evolution.
+- `generation` — integer, default 0. Incremented on each mutation.
+- `created_by` — provenance: `"human"` (default), `"import"`, `"evolver"`, `"agent_creator"`.
+- `reframing_potential` — nullable float. Forward-compatible infrastructure for distinguishing reframing primitives (which introduce qualitatively different analytical lenses) from execution-describing primitives. Not populated in v1.2.4.
+
+The existing `parent_content_hash` column is frozen — retained for backward compatibility but new code reads and writes `parent_ids` only.
 
 ### Metaprimitives
 
@@ -52,9 +65,47 @@ v1.2.3 ships 7 starter assigner metaprimitives.
 
 `~/.agency/composition-rules.csv` governs how Agency's functional agents are composed. It is a watched file: changes take effect on the next composition call without server restart. Editable directly or via the `agency-composition-config` skill in Claude Code.
 
+### Embedding model (v1.2.4)
+
+Agency uses `MongoDB/mdbr-leaf-mt-asym`, an asymmetric retrieval model with separate encoders for queries and documents:
+
+- **Query encoder** (23M params) — encodes task descriptions via `embed()`. Compact and fast.
+- **Document encoder** (335M params) — encodes primitive descriptions via `embed_document()`. Produces richer representations for the stored corpus.
+
+Both encoders output 1024-dimensional vectors. The asymmetric architecture matches tasks to primitives more precisely than a symmetric model — average composition fitness improved from 0.405 to 0.669 across test prompts.
+
+**Auto-migration:** on first startup after upgrade from a prior version, Agency detects the dimension mismatch between stored embeddings (384-dim from the previous model) and the current model (1024-dim), then re-embeds all stored primitives automatically. This takes ~60–90 seconds and completes before the server accepts connections. No manual migration step required.
+
+**Download:** the model is ~1.4GB, downloaded automatically on first use. Runs locally — no API calls.
+
+### Task-type classification (v1.2.4)
+
+Before embedding search, `classify_task_type(description)` categorises the task into one of twelve types: `research`, `build`, `review`, `analyse`, `write`, `design`, `debug`, `plan`, `audit`, `evaluate`, `advise`, `synthesise`. Falls back to `analyse` if no keywords match.
+
+The classifier filters the embedding path via two-pass retrieval: (1) type-filtered pass using keywords associated with the classified type, (2) full-pool fallback for unfilled slots. This ensures methodology primitives are discoverable even when domain vocabulary dominates the task description.
+
+Implementation: keyword heuristic (no LLM call). The classifier runs before `find_similar()` in the composition pipeline.
+
+### Composition fitness (v1.2.4)
+
+Every `agency_assign` response includes `composition_fitness` with:
+
+- `mean_fitness` — mean cosine similarity across all selected primitives
+- `pool_match` — advisory band: `"low"` (< 0.39), `"moderate"` (0.39–0.50), `"good"` (> 0.50)
+- `task_type` — classified task type from the pre-classifier
+- `capability_caveat` — present when `task_type` is `"research"`: warns that composition primitives frame analytical method but cannot supply domain knowledge
+
+The fitness floor (0.39) is advisory, not a gate — compositions proceed regardless. The value is adjustable via `agency.toml` (`[assigner] composition_fitness_floor`) or the status file without a code release.
+
 ### Triage
 
-A lightweight, stateless, read-only check (`POST /triage`) that returns the best-matching primitives for a task description without performing full composition. Used to decide whether composition adds value before paying its cost. See the Triage endpoint section under Integration surface.
+A lightweight, stateless, read-only check (`POST /triage`) that returns the best-matching primitives for a task description without performing full composition. v1.2.4 extends triage with a three-signal compose recommendation:
+
+- **Signal 1: Task type** — from `classify_task_type()`. Mapped to Agency probability: high (review/audit/advise), moderate (analyse/evaluate/synthesise), neutral (design/build/plan/debug), low (write/research).
+- **Signal 2: Fitness estimate** — mean similarity of top matches. Banded as low/moderate/good.
+- **Signal 3: Method absence** — heuristic estimate of whether the prompt already prescribes the analytical method. Higher = more room for Agency to add value.
+
+Recommendation values: `"compose"` (favourable), `"compose_with_advisory"` (mixed signals), `"compose_unlikely_to_help"` (unfavourable, with `reason` field).
 
 ### Agents and actor-agents
 
@@ -99,6 +150,10 @@ instance_id = "uuid-v7"
 host = "127.0.0.1"
 port = 8000
 
+[assigner]
+strategy = "embedding"           # or "llm"
+composition_fitness_floor = 0.39 # optional override (v1.2.4)
+
 [llm]
 backend = "claude-code"          # or "api" or "other"
 endpoint = ""                    # only used if backend = "api" or "other"
@@ -122,6 +177,9 @@ attribution = true
 
 [project]
 default_id = "uuid-v7"
+
+[status]
+url = "https://raw.githubusercontent.com/agentbureau/agency/main/agency-status.json"
 ```
 
 The `[llm]` section supports three backends:
@@ -160,45 +218,23 @@ Issued via `agency token create`. JWT claims:
 }
 ```
 
-Each token's `jti` is recorded in the `issued_tokens` table. The JWT middleware checks for revocation after signature verification: if the `jti` is present and `revoked = 1`, returns 401.
-
 ### Evaluator tokens
 
-Generated by Agency at evaluator creation time and baked into the evaluator's rendered prompt. JWT claims additionally include `project_id`, `task_id`, and `exp`. Each JWT is task-scoped and single-use.
+Single-use callback tokens issued by `GET /tasks/{id}/evaluator`. Scope: `evaluator:<task_id>`. Include evaluator agent metadata in claims.
+
+v1.2.4: `submit_evaluation()` accepts callback JWT in the request body (primary) or Authorization header (fallback with deprecation warning). Body-provided `evaluator_agent_id` takes precedence over JWT claims.
 
 ### Token management
 
-```bash
-agency token create --client-id <name>    # create and print to stdout
-agency token list                          # table of all issued tokens
-agency token revoke --client-id <name>     # revoke all tokens for a client
-```
-
-Revocation requires confirmation by typing: `yes, cancel every token, even ones on different computers`
-
-### Compatibility with v1.1.0
-
-v1.2.0 uses `EdDSA` instead of v1.1.0's `HS256`. All v1.1.0 tokens are immediately invalid after upgrading. Users must recreate tokens with `agency token create`.
+- `agency token create --client-id <name>` — issue a new token
+- `agency token revoke <jti>` — revoke by JTI
+- `agency token list` — list all issued tokens
 
 ---
 
 ## Agent output attribution
 
-Every agent prompt rendered by Agency includes an instruction to append a standard attribution and disclosure note at the end of the output:
-
-```
-This output was produced by an AI agent configured via Agency — an engine for configuring and evolving teams of AI agents. Machine-readable: ai-generated=true agent-config=agency url=https://github.com/agentbureau/agency
-```
-
-Format by output type:
-
-| Output format | Format |
-|---|---|
-| `prose`, `markdown`, or unset | HTML comment: `<!-- text -->` |
-| `yaml` | YAML comment: `# text` |
-| `json`, `code`, or any other value | Omitted |
-
-Attribution is on by default. Overridable at instance level (`agency.toml [output] attribution`) and project level (`projects.attribution`), following the null-inherit hierarchy.
+When `attribution = true` (default), every rendered agent prompt includes a footer line attributable to Agency: the agent's unique ID and composition hash. This survives output forwarding. Attribution can be disabled per-instance in `agency.toml [output]` or per-project.
 
 ---
 
@@ -206,263 +242,222 @@ Attribution is on by default. Overridable at instance level (`agency.toml [outpu
 
 ### MCP server (`agency mcp`)
 
-Transport: stdio. Launched by Claude Code as a subprocess. Requires `agency serve` to be running (started automatically via MCP auto-start if not already running — see Zero-terminal).
+Transport: stdio. Tools (v1.2.4):
 
-At startup, reads: Agency URL from `agency.toml`, JWT token from `AGENCY_TOKEN_FILE` (default: `~/.agency-mcp-token`), default project ID from `AGENCY_PROJECT_ID` env var or `agency.toml [project] default_id`.
+| Tool | Purpose |
+|---|---|
+| `agency_assign` | Compose agents for a batch of tasks |
+| `agency_evaluator` | Get evaluator prompt + callback JWT for a task |
+| `agency_submit_evaluation` | Submit evaluation with callback JWT |
+| `agency_get_task` | Retrieve task state, agent, evaluation |
+| `agency_list_projects` | List all projects |
+| `agency_create_project` | Create a new project |
+| `agency_status` | Instance status, task progress, primitive health |
+| `agency_update_primitives` | Update primitive pool from upstream starter CSV |
 
-Eight tools (v1.2.3):
+`agency_update_primitives` (v1.2.4) bypasses the API server — it calls `reconcile_from_csv()` directly against the shared SQLite database. All other tools route through the HTTP API via `client.py`.
 
 #### `agency_assign`
 
 ```json
 {
-  "project_id": "string (optional — falls back to default)",
   "tasks": [
     {
-      "external_id": "string",
-      "description": "string",
-      "skills": ["string"],
-      "deliverables": ["string"]
+      "external_id": "my-task-1",
+      "description": "Review the API design for consistency issues",
+      "skills": ["api-design"],
+      "deliverables": ["review-report.md"]
     }
-  ]
+  ],
+  "project_id": "optional-uuid"
 }
 ```
 
-Calls `POST /projects/{project_id}/assign`. Returns the full assignment packet as JSON.
+Response includes `assignments` (mapping external_id to agency_task_id and agent_hash), `agents` (mapping agent_hash to rendered_prompt, primitive_ids, composition_fitness), and `task_ids` summary.
+
+`composition_fitness` (v1.2.4) includes:
+- `per_primitive_similarity` — per-primitive cosine similarity scores
+- `mean_fitness` — mean across all selected primitives
+- `pool_match` — `"low"` / `"moderate"` / `"good"`
+- `task_type` — classified task type
+- `capability_caveat` — present for research tasks
 
 #### `agency_evaluator`
 
-```json
-{ "agency_task_id": "string" }
-```
-
-Calls `GET /tasks/{agency_task_id}/evaluator`. Returns `evaluator_prompt` and `callback_jwt`.
+Response includes `rendered_prompt`, `evaluator_prompt` (deprecated alias — use `rendered_prompt`; alias removal in v1.3.0), `callback_jwt`, `evaluator_agent_id`, `content_hash`, `template_id`.
 
 #### `agency_submit_evaluation`
 
+Accepts: `agency_task_id`, `callback_jwt`, `output`, and optional `score`, `task_completed`, `score_type`, `dimensional_scores`.
+
+`dimensional_scores` (v1.2.4) is an optional JSON object with caller-defined dimensions, e.g., `{"correctness": 85, "completeness": 70}`. Stored alongside the scalar score. v1.2.4: storage only — no downstream consumption.
+
+After storing the evaluation, a cascade propagates the score to all primitives in the composition (equal propagation — same score to each role component, desired outcome, and trade-off config).
+
+#### `agency_status`
+
+Response includes project list, task summaries, primitive counts. v1.2.4 additions:
+- `version_update_available` — present when a newer Agency version exists
+- `announcements` — unseen entries from the status file (displayed once per instance)
+- `primitives_update_available` — advisory when the status file signals a starter pack update
+
+#### `agency_update_primitives` (v1.2.4)
+
+No parameters required. Fetches the latest starter CSV from GitHub, reconciles with the local store. Returns counts: `new`, `updated_primitives`, `fields_changed`, `unchanged`, `below_threshold`, `failed`.
+
+### Triage endpoint (v1.2.4)
+
+`POST /triage` — lightweight pre-composition check.
+
+Request body:
+```json
+{"description": "Review the API design for consistency issues"}
+```
+
+Response (v1.2.4):
 ```json
 {
-  "agency_task_id": "string",
-  "callback_jwt": "string",
-  "output": "string"
+  "matched_primitives": [{"name": "...", "type": "role_component", "similarity": 0.45}],
+  "task_type": "review",
+  "fitness_estimate": 0.43,
+  "method_absence_estimate": 0.7,
+  "recommendation": "compose",
+  "reasoning": "Task type: review (high Agency probability). Fitness estimate: 0.430 (moderate). ...",
+  "signals": {
+    "task_type": "review",
+    "task_type_agency_probability": "high",
+    "fitness_estimate": 0.43,
+    "fitness_band": "moderate",
+    "method_absence_estimate": 0.7,
+    "method_absence_band": "high"
+  },
+  "warning": null
 }
 ```
 
-Calls `POST /tasks/{agency_task_id}/evaluation`. Returns `{"status": "ok", "content_hash": "<sha256>"}`. The requester should verify the returned content hash against the SHA-256 of the payload sent.
-
-#### `agency_get_task` (v1.2.2)
-
-```json
-{ "agency_task_id": "string" }
-```
-
-Calls `GET /tasks/{agency_task_id}`. Returns full task record: state (assigned/evaluation_pending/evaluation_received), agent_hash, re-rendered prompt, rendering warnings, and evaluation sub-object (null or full).
-
-#### `agency_list_projects` (v1.2.1)
-
-No parameters. Calls `GET /projects`. Returns list of projects with default identification.
-
-#### `agency_create_project` (v1.2.1)
-
-```json
-{ "name": "string", "description": "string (optional)", "set_as_default": "boolean (optional)" }
-```
-
-Calls `POST /projects`. Returns project_id and settings_applied.
-
-#### `agency_status` (v1.2.1)
-
-```json
-{ "project_id": "string (optional)" }
-```
-
-Calls `GET /status`. Returns instance status, per-project task summaries, and primitive counts.
-
-#### `agency_triage` (v1.2.3)
-
-```json
-{ "description": "string" }
-```
-
-Calls `POST /triage`. Returns best-matching primitives, recommendation (`compose` or `skip-safe`), and reasoning. See Triage endpoint below.
-
-### Triage endpoint (v1.2.3)
-
-`POST /triage` — lightweight, stateless, read-only primitive matching. Skips template selection, prompt rendering, composition caching, and task creation.
-
-**Request:**
-
-```json
-{
-  "description": "string (required)",
-  "project_id": "string (optional — reserved for future project-specific pools)"
-}
-```
-
-**Response:**
-
-```json
-{
-  "matched_primitives": [
-    { "name": "string", "type": "role_component|desired_outcome|trade_off_config", "similarity": 0.0 }
-  ],
-  "recommendation": "compose|skip-safe",
-  "reasoning": "string"
-}
-```
+Recommendation values: `"compose"`, `"compose_with_advisory"`, `"compose_unlikely_to_help"`. The `reason` field is present only when recommendation is `"compose_unlikely_to_help"`.
 
 ### CLI task commands (v1.2.2)
 
-Four non-interactive commands mirroring the MCP task tools. All call the shared client module (`agency/client.py`).
-
 ```bash
-agency task assign   --tasks '<json>' [--tasks-file <path>] [--tasks-stdin] [--project-id <uuid>]
-agency task evaluator --task-id <uuid> [--save-jwt <path>]
-agency task submit   --task-id <uuid> --callback-jwt <jwt> --output <text> [--score 0-100]
-agency task get      --task-id <uuid>
+agency task assign    --description "..." [--project-id UUID]
+agency task evaluator --task-id UUID
+agency task submit    --task-id UUID --callback-jwt TOKEN --output "..."
+agency task get       --task-id UUID
 ```
 
-Shared flags: `--client-id` (default `cli`), `--timeout` (default 30), `--format json|table`, `--no-guidance`, `--quiet/-q`.
+### CLI primitive commands
 
-Exit codes: 0 success, 1 client error, 2 server error, 3 application error.
+```bash
+agency primitives install    # Fetch and install starter set from GitHub
+agency primitives update     # Reconcile with latest upstream CSV
+agency primitives list       # List stored primitives
+agency primitives import <path> [--instance-id ID] [--dry-run]  # v1.2.4
+```
+
+`agency primitives import` (v1.2.4) reads a local CSV, validates against the starter schema (required: `type`, `name`, `description`), deduplicates by content hash, and inserts with `created_by = "import"`. Supports `--dry-run` for validation without writes.
 
 ### Error response schema (v1.2.2)
 
-All error responses include six fields:
+All error responses include:
 
 ```json
 {
   "status": "error",
-  "error_type": "transient | auth | not_found | validation | permanent",
-  "code": 404,
-  "message": "Task not found.",
-  "cause": "The agency_task_id does not match any task.",
-  "fix": "Check the agency_task_id from the assign response."
+  "error_type": "validation | authentication | permanent | transient",
+  "code": 422,
+  "message": "Human-readable error description",
+  "cause": "What went wrong",
+  "fix": "What to do about it"
 }
 ```
 
 ### Project level
 
-| Direction | Signal | Notes |
-|---|---|---|
-| IN | Project definition with all settings | `POST /projects` or `agency project create` |
-| IN | LLM credentials (instance or project override) | Set at init time or project creation |
-| IN | Oversight preference | `discretion` or `review`; null inherits instance default |
-| IN | Error notification timeout | Seconds; null inherits instance default |
-| IN | Contact email | Null inherits instance default |
-| IN | Attribution preference | On/off; null inherits instance default |
-| IN | Permission block | 13-character default for all entities in project |
-| OUT | Project ID + confirmation | UUID v7 |
+```
+POST /projects         — create project
+GET  /projects         — list projects
+GET  /status           — instance status (compact without project_id, detailed with)
+```
 
 ### Task level — individual
 
-| Direction | Signal | Notes |
-|---|---|---|
-| IN | Task description + project ID | `POST /tasks` |
-| OUT | Task agent (markdown) | `GET /tasks/{id}/agent` |
-| OUT | Evaluator agent (markdown) | `GET /tasks/{id}/evaluator` — callback JWT baked in |
-| IN | Evaluation report | `POST /tasks/{id}/evaluation` |
+```
+POST /tasks            — create task
+GET  /tasks/{id}       — get task state (assigned / evaluation_pending / evaluation_received)
+GET  /tasks/{id}/agent — compose and assign agent
+GET  /tasks/{id}/evaluator — get evaluator prompt + callback JWT
+POST /tasks/{id}/evaluation — submit evaluation
+```
 
 ### Task level — batch
 
-| Direction | Signal | Notes |
-|---|---|---|
-| IN | List of task descriptions + project ID | `POST /projects/{id}/assign` |
-| OUT | Assignment packet | Task-to-agent mapping + deduplicated agent definitions |
-
-The batch endpoint is the preferred integration pattern. The requester sends all tasks at once before execution begins. Agency returns a packet mapping each task to a composed agent and including all unique agent definitions. Tasks that compose to similar agents (cosine similarity >= 0.90) share a single agent definition.
-
-**Request body:**
-
-```json
-{
-  "tasks": [
-    {
-      "external_id": "string",
-      "description": "string",
-      "skills": ["string"],
-      "deliverables": ["string"]
-    }
-  ]
-}
 ```
-
-**Response:**
-
-```json
-{
-  "status": "ok",
-  "task_ids": [
-    {"external_id": "string", "agency_task_id": "uuid-v7", "agent_hash": "sha256-hex"}
-  ],
-  "assignments": {
-    "<external_id>": {
-      "agency_task_id": "uuid-v7",
-      "agent_hash": "sha256-hex"
-    }
-  },
-  "agents": {
-    "<agent_hash>": {
-      "rendered_prompt": "string",
-      "content_hash": "string",
-      "template_id": "string",
-      "permission_block": "string",
-      "primitive_ids": {
-        "role_components": ["uuid"],
-        "desired_outcomes": ["uuid"],
-        "trade_off_configs": ["uuid"]
-      }
-    }
-  }
-}
+POST /projects/{id}/assign — batch assign (preferred path)
 ```
-
-The `agents` map is deduplicated. If the primitive store is empty, the endpoint returns `503` with `{"error": "primitive_store_empty"}`.
 
 ### Callbacks from field (evaluator -> Agency)
 
-| Direction | Signal |
-|---|---|
-| IN | Full evaluation report — `POST /tasks/{id}/evaluation` |
-
-The endpoint computes SHA-256 of the received payload and returns `{"status": "ok", "content_hash": "<sha256>"}`. The requester verifies the returned hash against the hash of what was sent. Duplicate submissions (same `jti` + `task_id`) are rejected with 401.
+The evaluator callback uses a single-use JWT. v1.2.4: body is the primary path; Authorization header is a fallback (with deprecation warning).
 
 ### Evolution oversight
 
-| Direction | Signal |
-|---|---|
-| OUT | Evolution proposal (changes requiring human sign-off) |
-| IN | Human approval/rejection |
+Oversight preferences: `review` (require human confirmation), `discretion` (agency decides), `full_autonomy`. Set at instance or project level.
 
 ### Admin
 
-| Direction | Signal |
-|---|---|
-| IN | Primitive ingestion — `POST /primitives` (single) or `POST /primitives/import` (CSV) |
+```
+POST /tokens           — issue token
+DELETE /tokens/{jti}    — revoke token
+GET  /tokens            — list tokens
+```
 
 ---
 
 ## Primitive distribution
 
-The starter primitive set is hosted as a CSV file in the public Agency GitHub repository and fetched at init time. It is not bundled in the pip package.
-
-**CSV columns:** `type`, `name`, `description`, `quality`, `domain_specificity`, `domain`, `scope`, `origin_instance_id`, `parent_content_hash`.
+The starter primitive set is hosted as a CSV in the public Agency GitHub repository and fetched at init time. This keeps the pip package small and allows the primitive set to be updated independently of software releases.
 
 ### `agency primitives update`
 
-```bash
-agency primitives update
-```
+Fetches the current CSV and reconciles with the local store: inserting new primitives above the quality threshold, updating quality scores and metadata on existing ones, and leaving locally-evolved primitives untouched.
 
-Fetches the current starter CSV and reconciles with the local store:
+v1.2.4: per-row commits — a single row failure does not abort the remaining rows. Failed rows are reported with actionable error messages.
 
-1. **New primitives** (content hash not in local store, quality > 90): inserted with all CSV fields including `scope`
-2. **Existing primitives with changed quality, domain_specificity, or domain**: local columns updated; one row written to `primitive_mutations` per changed field
-3. **Unchanged primitives**: no action
-4. **Local primitives not in upstream CSV**: no action (may be locally created)
-5. **`parent_content_hash`**: stored on ingest for new primitives; immutable once set
+---
 
-Quality threshold is hardcoded at > 90 in v1.2.0.
+## Data foundation (v1.2.4)
+
+### Primitive performance
+
+The `primitive_performance` table stores running aggregates per primitive:
+- `evaluation_count`, `avg_score` — from evaluation cascade
+- `assignment_count`, `last_assigned_at` — from assignment tracking
+
+**Evaluation cascade:** after `submit_evaluation()` stores a composition-level score, it propagates to all constituent primitives. v1.2.4: equal propagation (same score to all). More sophisticated attribution deferred to v1.3.0.
+
+**Assignment tracking:** `assignment_count` increments on every `assign_agent()` call. Provides the exploitation signal a future UCB1 explorer needs.
+
+### Assignment candidates
+
+The `assignment_candidates` table stores all candidates considered during each assignment, with similarity scores, selection flags, and retrieval pass markers (`type_filtered` or `full_pool`). Enables retrospective analysis of selection strategies and pool health diagnostics.
+
+### Dimensional evaluation
+
+The `dimensional_scores` column on `pending_evaluations` stores optional caller-defined dimensional breakdowns alongside the scalar score. v1.2.4: storage only — no downstream consumption. The schema is intentionally unstructured (JSON object) to avoid locking in a taxonomy prematurely.
+
+---
+
+## Status file (v1.2.4)
+
+`agency-status.json` in the public GitHub repo acts as a zero-infrastructure control plane. Instances poll it on first MCP tool call per session (not periodic background).
+
+**Acting on fetched data:**
+- Version notifications in `agency_status` responses
+- Unseen announcements displayed once per instance (tracked in `seen_announcement_ids`)
+- Primitives update advisory — resurfaces each session until the user runs the update
+
+The composition fitness floor is adjustable via the status file without a code release.
 
 ---
 
@@ -470,173 +465,72 @@ Quality threshold is hardcoded at > 90 in v1.2.0.
 
 ### `agency init` — two-phase setup wizard
 
-Covers the full installation lifecycle. Every step checks whether it has already been completed and skips if so. Safe to re-run at any time. Uses a three-layer typography system: (1) system status lines (dim, checkmark/cross prefix), (2) helper/explanation text (italic, indented), (3) user prompts (bold, cyan accent, `▶` prefix). Falls back to plain text when stdout is not a TTY.
+Phase 1 (6 steps, no server required): configuration.
+Phase 2 (5 steps, runs the server briefly): database, primitives, project, token.
 
-Supports `--non-interactive` mode: when any flag is passed on the command line, the wizard runs without prompts, using flag values and defaults. This enables zero-terminal setup from within Claude Code.
+Every step is idempotent — the wizard can be re-run at any time and skips completed steps.
 
-**Phase 1 — Configuration (5 steps, no server required):**
+v1.2.4: three-layer terminal typography (status/helper/prompt) with TTY detection.
 
-| Step | What | Input |
-|---|---|---|
-| 1.1 | Generate instance credentials (UUID v7, Ed25519 keypair) | Automatic |
-| 1.2 | Configure server settings (host, port) | Automatic |
-| 1.3 | Configure LLM connection | User selects backend and provides credentials |
-| 1.4 | Configure notifications (contact email, timeout, oversight, SMTP) | User input |
-| 1.5 | Configure output defaults (attribution) | User input |
+### `agency serve`
 
-**Phase 2 — Initialisation (7 steps, runs the server briefly):**
-
-| Step | What | Input |
-|---|---|---|
-| 2.1 | Initialise database (start server, run migrations, stop) | Automatic |
-| 2.2 | Download embedding model (`MongoDB/mdbr-leaf-mt-asym`, ~1.4GB) | Automatic |
-| 2.3 | Install starter primitives (fetch CSV from GitHub — auto-download on first install) | Automatic |
-| 2.4 | Create first project (runs project creation wizard) | User input |
-| 2.5 | Create integration tokens (MCP, CLI, Superpowers, Workgraph) | Automatic |
-| 2.6 | Register with Claude Code (MCP server in `~/.claude.json`) | User confirms |
-| 2.7 | Install Claude Code skills | Automatic |
+Starts the API server. v1.2.4: clean shutdown on Ctrl+C (no asyncio/uvicorn traceback).
 
 ### `agency client setup`
 
-```bash
-agency client setup
-```
-
-Reviews and updates instance-level settings. Shows the current value of every setting; press enter to keep or type a new value to change. Includes protective behaviours for high-impact changes: keypair rotation requires typed confirmation and revokes all tokens; LLM changes run a connection test; contact email changes note which projects inherit. Supports `--non-interactive` mode via flags.
+Interactive guided setup for a client machine connecting to a remote Agency instance. Writes `agency.toml` with remote host/port/token.
 
 ### `agency project create`
 
-```bash
-agency project create
-```
-
-Interactive wizard to create a new project. Prompts for name and all project-level settings. Press enter to inherit the instance default (stored as null). After creation, offers to set as the default project.
+Interactive project creation. Settings not specified inherit from instance defaults.
 
 ### `agency skills install`
 
-```bash
-agency skills install
-```
-
-Installs bundled Claude Code skills into `~/.claude/skills/`. Idempotent — updates any skill whose content hash differs from the bundled version.
-
-Bundled skills in v1.2.3:
-- `agency-primitive-extraction` — guides Claude through extracting and authoring Agency primitives from existing prompts and agent descriptions
-- `agency-getting-started` — interactive walkthrough of the Agency workflow (assign → execute → evaluate), primitives explanation, and optional CLAUDE.md configuration
-- `agency-composition-config` — guided editing of `~/.agency/composition-rules.csv` via Claude Code conversation
+Installs Agency skills into `~/.claude/skills/`. Skills: `agency-getting-started`, `agency-composition-config`, `agency-primitive-extraction`.
 
 ### Token commands
 
 ```bash
-agency token create --client-id <name>    # create, print to stdout
-agency token list                          # table of all issued tokens
-agency token revoke --client-id <name>     # revoke all tokens for a client
+agency token create --client-id <name>
+agency token revoke <jti>
+agency token list
 ```
 
 ---
 
 ## Zero-terminal
 
-Agency supports fully zero-terminal operation: all setup, configuration, and serving can run inside Claude Code without requiring a separate terminal window.
-
 ### MCP auto-start
 
-When the MCP server starts (`agency mcp`), it checks whether `agency serve` is reachable. If not, it spawns `agency serve` as a background subprocess and polls the `/health` endpoint until the server is ready or timeout (30s). The server process is registered for cleanup on MCP process exit (`atexit`). If `agency serve` is already running, no action is taken.
+When Claude Code invokes an Agency MCP tool, the MCP server checks if `agency serve` is running (health check). If not, it spawns the server automatically. The user does not need a terminal tab running `agency serve`.
 
 ### Non-interactive flags
 
-`agency init` and `agency client setup` accept command-line flags for all configuration values. When any flag is provided, the wizard runs non-interactively using flag values and sensible defaults. This allows Claude Code to run setup without interactive stdin.
-
----
-
-## First-run onboarding
-
-On the first successful `agency_assign` or `agency_status` MCP tool call, Agency injects a `first_run_onboarding` field into the response:
-
-```json
-{
-  "first_run_onboarding": {
-    "message": "Agency is set up and working. Would you like a quick walkthrough of how to use it?",
-    "skill_name": "agency-getting-started",
-    "skip_instruction": "To skip, just proceed with your task. This message won't appear again."
-  }
-}
-```
-
-The field is injected in the MCP layer, not the API layer. Detection uses a marker file (`~/.agency/.onboarded`): absent = first run (inject and create marker), present = skip. The field appears once per instance lifetime.
-
-The `agency-getting-started` skill is also invocable at any time via `/agency-getting-started`.
+`agency init --non-interactive` completes setup using defaults without prompts. Essential for CI/CD and environments where `stdin` is not available.
 
 ---
 
 ## Translators
 
-Translators connect task management tools to Agency.
-
 ### MCP (Claude Code)
 
-The primary integration for Claude Code. `agency mcp` runs as an MCP server over stdio. See the MCP server section above for tool definitions.
-
-**One-time setup:**
-
-Handled by `agency init` Phase 1 Step 1.6 and Phase 2 Step 2.5. Manual setup if needed:
-
-```bash
-agency token create --client-id mcp > ~/.agency-mcp-token
-```
-
-Then merge into `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "agency": {
-      "command": "agency",
-      "args": ["mcp"],
-      "env": {
-        "AGENCY_TOKEN_FILE": "~/.agency-mcp-token"
-      }
-    }
-  }
-}
-```
+The native integration path. `agency mcp` registers as an MCP server in `~/.claude.json`.
 
 ### Workgraph (`translators/workgraph/`)
 
-Two files:
+`agency-wg-executor.sh` bridges Agency with Workgraph's task execution model.
 
-- **`agency-assign-workgraph`** — bash script run once before `wg service start`. Reads all open tasks, sends to `POST /projects/{id}/assign`, stores returned prompts and task IDs.
-- **`agency-wg-executor.sh`** — called by Workgraph for each task. Reads the pre-stored prompt, runs Claude, marks complete, fetches evaluator, posts result.
-
-**Setup:**
-
-```bash
-agency token create --client-id workgraph > ~/.agency-workgraph-token
-export AGENCY_PROJECT_ID="<your-project-id>"
-export AGENCY_TOKEN_FILE="$HOME/.agency-workgraph-token"
-```
+v1.2.4 fixes: `evaluator_prompt` → `rendered_prompt` field rename (Issue 9), callback JWT moved from header to body (Issue 10), `evaluator_agent_id` forwarding (Issue 11).
 
 ### Superpowers (`translators/superpowers/agency-dispatch/`)
 
-A skill file (`SKILL.md`) that replaces `dispatching-parallel-agents` when Agency is configured. Checks Agency reachability, falls back to standard dispatch if unreachable, extracts tasks from the current plan, calls batch assignment, dispatches subagents with rendered prompts, and posts evaluator results.
-
-```bash
-agency token create --client-id superpowers > ~/.agency-superpowers-token
-```
+Legacy integration path. Available as a fallback for environments without MCP support.
 
 ---
 
 ## Error handling
 
-Agency emails the resolved contact address when it encounters a problem it cannot resolve. Contact email, oversight preference, and error notification timeout are resolved using the instance/project hierarchy.
-
-| Error type | Behaviour |
-|---|---|
-| Primitive store empty | 503 response; email notification to contact |
-| LLM call failure | Retry until timeout; email contact; resume when reachable |
-| No agent can be created for task | Email contact immediately |
-| Task clarification timeout | Email contact after timeout; task remains pending |
-| SMTP failure | Logged only — cannot email about email failure |
+Agency uses structured error classification (`error_type`) to help callers handle errors programmatically. `validation` errors indicate bad input and should not be retried. `transient` errors (network, timeout) should be retried with backoff. `permanent` errors indicate configuration or state problems requiring human intervention.
 
 ### SMTP configuration
 
@@ -670,6 +564,7 @@ Uses Python's standard library `smtplib` with TLS. Configured in `agency.toml [s
 | `sqlite-vec` | Vector similarity search |
 | `tomli` / `tomli-w` | TOML config read/write |
 | `httpx` | HTTP client for auto-start health checks and MCP-to-API calls |
+| `packaging>=21.0` | Semantic version comparison for status file notifications (v1.2.4) |
 
 ---
 
@@ -690,54 +585,49 @@ All configuration, database initialisation, primitive installation, project crea
 
 ---
 
-## Compatibility with v1.1.0
+## Schema migrations (v1.2.4)
 
-All v1.1.0 functionality is preserved. v1.2.0 is additive with these exceptions:
+| Migration | Function | What it does |
+|---|---|---|
+| 6 | `add_lineage_columns` | Adds `parent_ids`, `generation`, `created_by`, `reframing_potential` to all primitive tables; recreates `primitives` view; adds name column indexes |
+| 7 | `add_assignment_candidates` | Creates `assignment_candidates` table with task and primitive indexes |
+| 8 | `add_primitive_performance` | Creates `primitive_performance` table and `cascaded_evaluation_ids` table |
+| 9 | `add_dimensional_scores` | Adds `dimensional_scores` column to `pending_evaluations` |
 
-1. **JWT algorithm changes from `HS256` to `EdDSA`.** All v1.1.0 tokens are invalid after upgrading. Recreate with `agency token create`.
+All migrations are additive (new columns or new tables). All ALTER TABLE statements use idempotency guards (try/except for duplicate column name) to handle the MCP/API migration race condition.
 
-2. **`agency.toml` restructured.** `[auth] jwt_secret` removed. New sections: `[llm]`, `[notifications]`, `[smtp]`, `[output]`.
+---
 
-3. **`agency token create` generates a `jti` claim** and writes to `issued_tokens`. Requires the database to exist.
+## Compatibility with v1.2.3
 
-4. **`projects` table gains new columns:** `name`, `contact_email`, `oversight_preference`, `error_notification_timeout`, `llm_provider`, `llm_model`, `llm_api_key`, `homepool_retry_max_interval`, `permission_block`, `attribution`. Existing rows receive defaults via migration.
+v1.2.4 is additive with these exceptions:
 
-5. **`primitives` table gains new columns:** `quality`, `domain_specificity`, `domain`, `origin_instance_id`, `parent_content_hash`, `permission_block`, `override_capability`. Existing primitives receive defaults via migration.
+1. **`TaskRequest.output_format` default changes from `"json"` to `"markdown"`.** Callers depending on JSON output must explicitly pass `output_format: "json"`.
 
-6. **`compositions` table gains `permission_block`.** Existing compositions receive the default.
+2. **Triage `recommendation` field changes from two values to three.** `"skip-safe"` is retired. New values: `"compose"`, `"compose_with_advisory"`, `"compose_unlikely_to_help"`. Callers checking `recommendation == "skip-safe"` must update.
 
-7. **New tables:** `issued_tokens`, `pending_evaluations`, `primitive_mutations`.
+3. **Triage response gains new fields:** `task_type`, `fitness_estimate`, `method_absence_estimate`, `signals`, and optional `reason`. Additive — existing parsers that ignore unknown fields are unaffected.
 
-8. **`POST /tasks/{id}/evaluation` response** now returns `{"status": "ok", "content_hash": "<sha256>"}` (changed from `"accepted"` in v1.2.2).
+4. **`_assign_via_embedding()` return type changes from tuple to dict.** Internal function — no external callers affected.
 
-### Compatibility with v1.2.1
+5. **`find_similar()` gains two optional parameters:** `keyword_filter` and `exclude_ids`. Backward-compatible — existing callers pass neither.
 
-v1.2.2 is additive with these exceptions:
+6. **Four new migrations (6–9)** add columns to primitive tables and `pending_evaluations`, and create two new tables. Run automatically on first startup after upgrade.
 
-1. **Submit response `status` changes from `"accepted"` to `"ok"`.** Requesters parsing `status == "accepted"` must update.
-2. **All error responses gain `error_type` field.** Additive — existing parsers that ignore unknown fields are unaffected.
-3. **Assign response gains `task_ids` summary block.** Additive.
-4. **`agents` table gains `template_id` column** via migration. Existing rows auto-populate with `"default"`. Inert in v1.2.2.
-5. **`agent_hash` in status endpoint** now returns `agents.content_hash` (SHA-256) instead of `agent_composition_id` (UUID).
+7. **`EvaluatorResponse` gains `evaluator_prompt` computed field.** Both `rendered_prompt` and `evaluator_prompt` appear in JSON serialisation with identical values. The alias is deprecated — use `rendered_prompt`. Removal in v1.3.0.
 
-### Compatibility with v1.2.2
+8. **`submit_evaluation()` now accepts callback JWT from Authorization header** as fallback (with deprecation warning). Body remains the primary path.
 
-v1.2.3 is additive with these exceptions:
+9. **`composition_fitness` dict gains `mean_fitness`, `pool_match`, `task_type` fields.** Additive.
 
-1. **`scope` column added to all three primitive tables** (`role_components`, `desired_outcomes`, `trade_off_configs`) via migration. `TEXT NOT NULL DEFAULT 'task'`. Existing rows default to `'task'`. The `primitives` view is dropped and recreated to include `scope`.
+10. **New MCP tool: `agency_update_primitives`.** Additive — tool count increases from 8 to 9.
 
-2. **`agency.toml` gains `[assigner]` section.** Additive — absent section defaults to `strategy = "embedding"`.
+11. **`agency_status` response may include `version_update_available`, `announcements`, `primitives_update_available`.** Additive.
 
-3. **`composition-rules.csv` created on first serve.** New file at `~/.agency/composition-rules.csv` with 5 starter rules. User-editable; `agency primitives update` does not overwrite it.
+12. **New CLI command: `agency primitives import <path>`.** Additive.
 
-4. **Assign response gains `composition_fitness` per agent.** Additive.
+13. **Starter CSV gains columns:** `parent_ids`, `generation`, `created_by`. Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade.
 
-5. **New endpoint: `POST /triage`.** Additive.
+14. **New dependency: `packaging>=21.0`.** Required for version comparison in status file notifications.
 
-6. **New MCP tool: `agency_triage`.** Additive — tool count increases from 7 to 8.
-
-7. **`first_run_onboarding` field injected on first successful MCP call.** One-time, additive. Controlled by `~/.agency/.onboarded` marker file.
-
-8. **Starter CSV gains `scope` column.** Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade to ingest 7 new metaprimitives.
-
-9. **New bundled skills:** `agency-getting-started`, `agency-composition-config`. Run `agency skills install` to install.
+15. **Embedding model changed from `all-MiniLM-L6-v2` (384 dims) to `MongoDB/mdbr-leaf-mt-asym` (1024 dims).** All stored primitive embeddings are regenerated automatically on first server startup. Download size increases from ~80MB to ~1.4GB on first install. The auto-migration runs before the server accepts connections — no manual step required.
