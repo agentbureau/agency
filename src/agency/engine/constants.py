@@ -54,3 +54,66 @@ ASSIGNER_FALLBACK_LOG: str = "~/.agency/assigner-fallback.log"
 
 # Key in agency-status.json that signals LLM path is available.
 LLM_ASSIGNER_AVAILABLE_FLAG: str = "llm_assigner_available"
+
+# --- Composition fitness floor (v1.2.4 Issue 4) ---
+
+# Below this, composition is actively unhelpful across all rounds and models.
+# Calibration: round 7 all 7 races at 0.415–0.453, Agency 5-0-2.
+# Rounds 1–6 confirm: below 0.39, Agency wins 0 races.
+COMPOSITION_FITNESS_FLOOR: float = 0.39
+
+# Upper fitness band boundary. Above this, Agency is favoured.
+COMPOSITION_FITNESS_GOOD_THRESHOLD: float = 0.50
+
+# --- Task-type pre-classification (v1.2.4 Issue 8) ---
+
+TASK_TYPE_KEYWORDS: dict[str, list[str]] = {
+    "synthesise": ["synthesise", "synthesize", "bring together", "consolidate",
+                   "unify", "reconcile findings", "cross-cutting", "integrate the",
+                   "combine the"],
+    "review": ["review", "check this", "inspect", "examine", "look at",
+               "go through", "assess this", "feedback on", "review the"],
+    "audit": ["audit", "verify", "validate", "compliance",
+              "check against", "does this meet", "for pii", "exposure"],
+    "advise": ["advise", "recommend", "suggest", "what should", "counsel",
+               "guidance", "strategic", "what would you", "pricing strategy"],
+    "research": ["research", "investigate", "find out", "literature", "survey",
+                 "cite", "sources", "bibliography", "what does the evidence"],
+    "build": ["build", "create a", "implement", "develop", "code", "deploy",
+              "ship", "construct", "set up", "install"],
+    "analyse": ["analyse", "analyze", "break down", "decompose", "compare",
+                "contrast", "identify patterns", "what explains"],
+    "write": ["write", "draft", "compose", "author", "produce a document",
+              "blog post", "essay", "memo", "newsletter"],
+    "design": ["design", "architect", "lay out", "propose a model",
+               "propose a data model", "framework for", "three-tier"],
+    "debug": ["debug", "troubleshoot", "diagnose", "why is this",
+              "failing", "broken", "returns 502", "returns 500"],
+    "plan": ["plan", "roadmap", "schedule", "sequence", "prioritise",
+             "what order", "timeline", "milestones"],
+    "evaluate": ["evaluate", "score", "rate", "rank", "judge", "assess quality",
+                 "how good", "which is better"],
+}
+
+TASK_TYPE_DEFAULT: str = "analyse"
+
+# Agency probability by task type (Horse Race rounds 1–9, 58 races).
+AGENCY_PROBABILITY_BY_TYPE: dict[str, str] = {
+    "review": "high", "audit": "high", "advise": "high",
+    "analyse": "moderate", "evaluate": "moderate", "synthesise": "moderate",
+    "design": "neutral", "build": "neutral", "plan": "neutral", "debug": "neutral",
+    "write": "low", "research": "low",
+}
+
+# Analytical method indicator verbs — presence suggests prompt already prescribes the approach.
+METHOD_INDICATOR_VERBS: list[str] = [
+    "distinguish", "differentiate", "classify according to",
+    "evaluate by", "assess against", "compare using",
+    "identify the assumption", "test whether", "generate the strongest",
+    "apply the framework", "use the criteria", "score against",
+    "rank by", "prioritise according to",
+]
+
+# Method absence estimation thresholds (Issue 17).
+METHOD_ABSENCE_HIGH: float = 0.7
+METHOD_ABSENCE_MODERATE: float = 0.4

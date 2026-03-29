@@ -28,6 +28,12 @@ from agency.cli.wizard_ui import (
     prompt_choice,
     SETTING_HELP,
 )
+from agency.cli.terminal import (  # v1.2.4 Issue 20 — terminal typography helpers
+    status as _term_status,
+    helper as _term_helper,
+    success as _term_success,
+    error as _term_error,
+)
 
 # Backward-compatible alias — existing tests import this from init.py
 FIELD_EXPLAINERS = {
@@ -645,6 +651,11 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict,
     # Step 2.4 -- Create first project
     _step_header(2, 4, 7)
     helper(SETTING_HELP["project_name"])
+    helper(
+        "Inherited settings (oversight, attribution, notifications) come from\n"
+        "agency.toml and apply to all projects unless overridden per-project.\n"
+        "You can override them later with: agency project create --help"
+    )
     proj_configured = _project_already_configured(toml_path, db_path)
     if proj_configured:
         wiz_status("Default project already configured. Skipping.")
@@ -758,6 +769,7 @@ def _run_phase2(state_dir: str, toml_path: str, cfg: dict,
             "\nSetup complete. Agency is ready to use.\n\n"
             "To get started with Agency, inside Claude Code use the skill /agency-getting-started."
         )
+    helper("Run the agency-getting-started skill for a guided walkthrough: /agency-getting-started")
 
 
 # -- Phase 2 step helpers -------------------------------------------------

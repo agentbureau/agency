@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Request, HTTPException
 from agency.models.tasks import TaskRequest, AgentResponse, EvaluatorResponse
 from agency.models.evaluations import EvaluationReport
@@ -89,13 +91,33 @@ def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
             "fix": "Check the agency_assign response — use the agency_task_id field.",
         })
 
-    # Dual JWT validation: callback JWT from body
+    # Dual JWT validation: callback JWT from body, with header fallback (Issue 10)
+    callback_jwt = report.callback_jwt
+    if not callback_jwt:
+        # Fallback: check if Authorization header carries an evaluator-scoped JWT
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            header_token = auth.removeprefix("Bearer ")
+            try:
+                from agency.auth.jwt import verify_jwt
+                claims = verify_jwt(header_token, getattr(request.app.state, "public_key", None))
+                if claims.get("scope", "").startswith("evaluator:"):
+                    callback_jwt = header_token
+                    logging.getLogger(__name__).warning(
+                        "Callback JWT found in Authorization header instead of body "
+                        "(task_id=%s). Update your integration to send callback_jwt in "
+                        "the request body.",
+                        task_id,
+                    )
+            except Exception:
+                pass  # Not a valid evaluator JWT — proceed without
+
     callback_claims = {}
-    if report.callback_jwt:
+    if callback_jwt:
         from agency.auth.jwt import verify_jwt, is_valid_evaluator_scope
         public_key = getattr(request.app.state, "public_key", None)
         try:
-            callback_claims = verify_jwt(report.callback_jwt, public_key)
+            callback_claims = verify_jwt(callback_jwt, public_key)
         except Exception:
             raise HTTPException(status_code=401, detail={
                 "error": "authentication_failed",
@@ -135,19 +157,17 @@ def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
     # Atomic transaction: enqueue evaluation + record JWT consumption
     conn = request.app.state.db
     jti = callback_claims.get("jti")
+    dim_scores_json = json.dumps(report.dimensional_scores) if report.dimensional_scores else None
+    eid = _new_uuid()  # Defined before try — in scope for cascade
     try:
         conn.execute("BEGIN")
-        eid = _new_uuid()
         conn.execute(
             """INSERT INTO pending_evaluations
-               (id, task_id, evaluator_data, destination, content_hash)
-               VALUES (?, ?, ?, ?, ?)""",
-            (eid, task_id, data, "agency_instance", content_hash(data)),
+               (id, task_id, evaluator_data, destination, content_hash, dimensional_scores)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (eid, task_id, data, "agency_instance", hash_, dim_scores_json),
         )
         # Confirm immediately for local instance evaluations (canon §4.3).
-        # Inlined into the same transaction — no crash window.
-        # When home_pool destination is added (v2+), guard with:
-        #   if destination == "agency_instance":
         conn.execute(
             "UPDATE pending_evaluations SET confirmed = 1, confirmed_at = datetime('now') WHERE id = ?",
             (eid,),
@@ -161,6 +181,14 @@ def submit_evaluation(task_id: str, report: EvaluationReport, request: Request):
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+    # Evaluation cascade — outside main transaction (Issue 23)
+    try:
+        from agency.db.performance import propagate_evaluation_to_primitives
+        propagate_evaluation_to_primitives(conn, task_id, eid, report.score)
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning("Evaluation cascade failed for task %s: %s", task_id, e)
 
     return {"status": "ok", "content_hash": hash_}
 

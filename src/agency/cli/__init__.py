@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+
 import click
 from agency.cli.init import init_command
 from agency.cli.serve import serve_command

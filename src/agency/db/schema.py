@@ -226,3 +226,120 @@ def add_scope_column(conn: sqlite3.Connection) -> None:
                    scope, 'trade_off_config'
             FROM trade_off_configs;
     """)
+
+
+@migration
+def add_lineage_columns(conn: sqlite3.Connection) -> None:
+    """Migration 6: Add lineage tracking + reframing_potential to all primitive tables.
+
+    Uses individual execute() calls (not executescript()) so each ALTER TABLE
+    can be wrapped in try/except for idempotency — handles the migration race
+    condition described in Issue 14a (Finding 8).
+    """
+    alter_statements = [
+        "ALTER TABLE role_components ADD COLUMN parent_ids TEXT",
+        "ALTER TABLE role_components ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE role_components ADD COLUMN created_by TEXT NOT NULL DEFAULT 'human'",
+        "ALTER TABLE desired_outcomes ADD COLUMN parent_ids TEXT",
+        "ALTER TABLE desired_outcomes ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE desired_outcomes ADD COLUMN created_by TEXT NOT NULL DEFAULT 'human'",
+        "ALTER TABLE trade_off_configs ADD COLUMN parent_ids TEXT",
+        "ALTER TABLE trade_off_configs ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE trade_off_configs ADD COLUMN created_by TEXT NOT NULL DEFAULT 'human'",
+        # Issue 31a: forward-compatible reframing_potential column (NULL until populated)
+        "ALTER TABLE role_components ADD COLUMN reframing_potential REAL",
+        "ALTER TABLE desired_outcomes ADD COLUMN reframing_potential REAL",
+        "ALTER TABLE trade_off_configs ADD COLUMN reframing_potential REAL",
+    ]
+    for stmt in alter_statements:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+
+    conn.execute("DROP VIEW IF EXISTS primitives")
+    conn.execute("""
+        CREATE VIEW primitives AS
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, parent_ids, generation, created_by, reframing_potential,
+                   'role_component' AS primitive_type
+            FROM role_components
+        UNION ALL
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, NULL AS override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, parent_ids, generation, created_by, reframing_potential,
+                   'desired_outcome'
+            FROM desired_outcomes
+        UNION ALL
+            SELECT id, name, description, content_hash, quality, domain_specificity, domain,
+                   permission_block, NULL AS override_capability, origin_instance_id, parent_content_hash,
+                   instance_id, client_id, project_id, source_tier, embedding, created_at,
+                   scope, parent_ids, generation, created_by, reframing_potential,
+                   'trade_off_config'
+            FROM trade_off_configs
+    """)
+    # Indexes for name dedup performance (Issue 21)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rc_name ON role_components(name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_do_name ON desired_outcomes(name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tc_name ON trade_off_configs(name)")
+    # Do NOT call conn.commit() — migration runner handles the commit
+
+
+@migration
+def add_assignment_candidates(conn: sqlite3.Connection) -> None:
+    """Migration 7: Create assignment_candidates table for experiment tracking (Issue 22, Wave 2)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS assignment_candidates (
+            id              TEXT PRIMARY KEY,
+            task_id         TEXT NOT NULL,
+            primitive_id    TEXT NOT NULL,
+            primitive_type  TEXT NOT NULL,
+            similarity_score REAL NOT NULL,
+            was_selected    INTEGER NOT NULL DEFAULT 0,
+            retrieval_pass  TEXT NOT NULL DEFAULT 'full_pool',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_assignment_candidates_task
+            ON assignment_candidates(task_id);
+        CREATE INDEX IF NOT EXISTS idx_assignment_candidates_primitive
+            ON assignment_candidates(primitive_id);
+    """)
+
+
+@migration
+def add_primitive_performance(conn: sqlite3.Connection) -> None:
+    """Migration 8: Create primitive_performance + cascaded_evaluation_ids tables (Issues 23+25)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS primitive_performance (
+            primitive_id        TEXT NOT NULL,
+            primitive_type      TEXT NOT NULL,
+            evaluation_count    INTEGER NOT NULL DEFAULT 0,
+            avg_score           REAL NOT NULL DEFAULT 0.0,
+            last_evaluation_id  TEXT,
+            last_evaluation_at  TEXT,
+            assignment_count    INTEGER NOT NULL DEFAULT 0,
+            last_assigned_at    TEXT,
+            PRIMARY KEY (primitive_id, primitive_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS cascaded_evaluation_ids (
+            evaluation_id   TEXT PRIMARY KEY,
+            cascaded_at     TEXT NOT NULL
+        );
+    """)
+
+
+@migration
+def add_dimensional_scores(conn: sqlite3.Connection) -> None:
+    """Migration 9: Add dimensional_scores column to pending_evaluations (Issue 24)."""
+    try:
+        conn.execute(
+            "ALTER TABLE pending_evaluations ADD COLUMN dimensional_scores TEXT"
+        )
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise

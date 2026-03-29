@@ -57,10 +57,13 @@ def serve_command(host: str | None, port: int | None, reload: bool):
     print(file=sys.stderr)
     print(f'Tell Claude Code: "Use Agency to compose agents for tasks in this project."', file=sys.stderr)
 
-    uvicorn.run(
-        "agency.api.app:create_app",
-        host=resolved_host,
-        port=resolved_port,
-        reload=reload,
-        factory=True,
-    )
+    try:
+        uvicorn.run(
+            "agency.api.app:create_app",
+            host=resolved_host,
+            port=resolved_port,
+            reload=reload,
+            factory=True,
+        )
+    except KeyboardInterrupt:
+        print("\nShutting down Agency server…", file=sys.stderr)

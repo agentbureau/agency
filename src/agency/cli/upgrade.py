@@ -9,6 +9,8 @@ import click
 import httpx
 from pathlib import Path
 
+from agency.constants import GITHUB_ORG, GITHUB_REPO
+
 
 def _state_dir() -> Path:
     return Path(os.environ.get("AGENCY_STATE_DIR", Path.home() / ".agency"))
@@ -38,7 +40,7 @@ def _backup_state(state_dir: Path, backup_dir: Path) -> None:
 
 
 @click.command("upgrade")
-@click.option("--repo", default="vaughntan/agency",
+@click.option("--repo", default=f"{GITHUB_ORG}/{GITHUB_REPO}",
               help="GitHub repo (owner/name) to check for releases")
 @click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, default=False,

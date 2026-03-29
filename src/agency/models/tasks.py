@@ -1,10 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 
 class TaskRequest(BaseModel):
     task_description: str
     output_structure: str = "structured"
-    output_format: str = "json"
+    output_format: str = "markdown"
     clarification_behaviour: str = "ask"
     client_id: str | None = None
     project_id: str | None = None
@@ -23,6 +23,12 @@ class EvaluatorResponse(BaseModel):
     template_id: str
     rendered_prompt: str
     callback_jwt: str
+
+    @computed_field
+    @property
+    def evaluator_prompt(self) -> str:
+        """Deprecated alias — use rendered_prompt. Remove in v1.3.0."""
+        return self.rendered_prompt
 
 
 class BatchTaskRequest(BaseModel):

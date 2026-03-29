@@ -17,11 +17,12 @@ from agency.db.primitives import (
     TYPE_TO_TABLE,
     insert_primitive,
 )
+from agency.constants import GITHUB_ORG, GITHUB_REPO
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
 
 STARTER_CSV_URL = (
-    "https://raw.githubusercontent.com/agentbureau/agency/main/primitives/starter.csv"
+    f"https://raw.githubusercontent.com/{GITHUB_ORG}/{GITHUB_REPO}/main/primitives/starter.csv"
 )
 QUALITY_THRESHOLD = 90
 
@@ -98,49 +99,62 @@ def install_from_csv(
     rows: list[dict],
     conn: sqlite3.Connection,
     instance_id: str,
-) -> tuple[int, int]:
-    """Insert primitives from parsed CSV rows. Returns (inserted, skipped)."""
+) -> dict:
+    """Insert primitives from parsed CSV rows. Returns stats dict."""
     existing = _get_existing_by_hash(conn)
-    inserted = skipped = 0
+    stats = {"inserted": 0, "skipped": 0, "failed": 0, "failed_rows": []}
 
-    for row in rows:
-        quality = int(row.get("quality", 100))
-        if quality <= QUALITY_THRESHOLD:
-            skipped += 1
+    for row_num, row in enumerate(rows, start=1):
+        try:
+            quality = int(row.get("quality", 100))
+            if quality <= QUALITY_THRESHOLD:
+                stats["skipped"] += 1
+                continue
+
+            ptype = row["type"]
+            table = TYPE_TO_TABLE.get(ptype)
+            if not table:
+                stats["skipped"] += 1
+                continue
+
+            desc = row["description"]
+            chash = content_hash(desc)
+            if chash in existing:
+                stats["skipped"] += 1
+                continue
+
+            domain_csv = row.get("domain", "")
+            domain_json = _parse_domain(domain_csv)
+
+            insert_primitive(
+                conn,
+                table,
+                description=desc,
+                instance_id=instance_id,
+                name=row.get("name", ""),
+                quality=quality,
+                domain_specificity=int(row.get("domain_specificity", 0)),
+                domain=domain_json,
+                origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
+                parent_content_hash=row.get("parent_content_hash") or None,
+                scope=row.get("scope", "task"),
+                created_by=row.get("created_by", "human"),
+                generation=int(row.get("generation", 0)),
+                parent_ids=row.get("parent_ids") or None,
+            )
+            existing[chash] = {"table": table}
+            stats["inserted"] += 1
+        except Exception as e:
+            conn.rollback()
+            stats["failed"] += 1
+            stats["failed_rows"].append({
+                "row": row_num,
+                "name": row.get("name", ""),
+                "error": str(e),
+            })
             continue
 
-        ptype = row["type"]
-        table = TYPE_TO_TABLE.get(ptype)
-        if not table:
-            skipped += 1
-            continue
-
-        desc = row["description"]
-        chash = content_hash(desc)
-        if chash in existing:
-            skipped += 1
-            continue
-
-        domain_csv = row.get("domain", "")
-        domain_json = _parse_domain(domain_csv)
-
-        insert_primitive(
-            conn,
-            table,
-            description=desc,
-            instance_id=instance_id,
-            name=row.get("name", ""),
-            quality=quality,
-            domain_specificity=int(row.get("domain_specificity", 0)),
-            domain=domain_json,
-            origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
-            parent_content_hash=row.get("parent_content_hash") or None,
-            scope=row.get("scope", "task"),
-        )
-        existing[chash] = {"table": table}  # Prevent duplicate insert within same batch
-        inserted += 1
-
-    return inserted, skipped
+    return stats
 
 
 def reconcile_from_csv(
@@ -148,94 +162,118 @@ def reconcile_from_csv(
     conn: sqlite3.Connection,
     instance_id: str,
 ) -> dict:
-    """Full reconciliation: insert new, update changed fields, record mutations."""
+    """Full reconciliation: insert new, update changed fields, record mutations.
+
+    Per-row commits — a single row failure does not abort remaining rows.
+    """
     existing = _get_existing_by_hash(conn)
     stats = {"new": 0, "updated_primitives": 0, "fields_changed": 0,
-             "unchanged": 0, "below_threshold": 0}
+             "unchanged": 0, "below_threshold": 0, "failed": 0,
+             "failed_rows": []}
 
-    for row in rows:
-        quality = int(row.get("quality", 100))
-        ptype = row["type"]
-        table = TYPE_TO_TABLE.get(ptype)
-        if not table:
-            continue
-
-        desc = row["description"]
-        chash = content_hash(desc)
-        domain_json = _parse_domain(row.get("domain", ""))
-        domain_spec = int(row.get("domain_specificity", 0))
-
-        if chash not in existing:
-            if quality <= QUALITY_THRESHOLD:
-                stats["below_threshold"] += 1
+    for row_num, row in enumerate(rows, start=1):
+        try:
+            quality = int(row.get("quality", 100))
+            ptype = row["type"]
+            table = TYPE_TO_TABLE.get(ptype)
+            if not table:
                 continue
-            insert_primitive(
-                conn, table,
-                description=desc,
-                instance_id=instance_id,
-                name=row.get("name", ""),
-                quality=quality,
-                domain_specificity=domain_spec,
-                domain=domain_json,
-                origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
-                parent_content_hash=row.get("parent_content_hash") or None,
-                scope=row.get("scope", "task"),
-            )
-            stats["new"] += 1
-        else:
-            local = existing[chash]
-            changed = False
 
-            if local["quality"] != quality:
-                _record_mutation(conn, chash, "quality",
-                                 str(local["quality"]), str(quality),
-                                 AGENTBUREAU_INSTANCE_ID)
-                conn.execute(
-                    f"UPDATE {local['table']} SET quality = ? WHERE content_hash = ?",
-                    (quality, chash),
+            desc = row["description"]
+            chash = content_hash(desc)
+            domain_json = _parse_domain(row.get("domain", ""))
+            domain_spec = int(row.get("domain_specificity", 0))
+
+            if chash not in existing:
+                if quality <= QUALITY_THRESHOLD:
+                    stats["below_threshold"] += 1
+                    continue
+                insert_primitive(
+                    conn, table,
+                    description=desc,
+                    instance_id=instance_id,
+                    name=row.get("name", ""),
+                    quality=quality,
+                    domain_specificity=domain_spec,
+                    domain=domain_json,
+                    origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
+                    parent_content_hash=row.get("parent_content_hash") or None,
+                    scope=row.get("scope", "task"),
+                    created_by=row.get("created_by", "human"),
+                    generation=int(row.get("generation", 0)),
+                    parent_ids=row.get("parent_ids") or None,
                 )
-                stats["fields_changed"] += 1
-                changed = True
-
-            if local["domain_specificity"] != domain_spec:
-                _record_mutation(conn, chash, "domain_specificity",
-                                 str(local["domain_specificity"]), str(domain_spec),
-                                 AGENTBUREAU_INSTANCE_ID)
-                conn.execute(
-                    f"UPDATE {local['table']} SET domain_specificity = ? WHERE content_hash = ?",
-                    (domain_spec, chash),
-                )
-                stats["fields_changed"] += 1
-                changed = True
-
-            if local["domain"] != domain_json:
-                _record_mutation(conn, chash, "domain",
-                                 local["domain"], domain_json,
-                                 AGENTBUREAU_INSTANCE_ID)
-                conn.execute(
-                    f"UPDATE {local['table']} SET domain = ? WHERE content_hash = ?",
-                    (domain_json, chash),
-                )
-                stats["fields_changed"] += 1
-                changed = True
-
-            csv_scope = row.get("scope", "task")
-            if local.get("scope", "task") != csv_scope:
-                _record_mutation(conn, chash, "scope",
-                                 local.get("scope", "task"), csv_scope,
-                                 AGENTBUREAU_INSTANCE_ID)
-                conn.execute(
-                    f"UPDATE {local['table']} SET scope = ? WHERE content_hash = ?",
-                    (csv_scope, chash),
-                )
-                stats["fields_changed"] += 1
-                changed = True
-
-            if changed:
-                conn.commit()
-                stats["updated_primitives"] += 1
+                existing[chash] = {
+                    "table": table,
+                    "quality": quality,
+                    "domain_specificity": domain_spec,
+                    "domain": domain_json,
+                    "scope": row.get("scope", "task"),
+                }
+                stats["new"] += 1
             else:
-                stats["unchanged"] += 1
+                local = existing[chash]
+                changed = False
+
+                if local["quality"] != quality:
+                    _record_mutation(conn, chash, "quality",
+                                     str(local["quality"]), str(quality),
+                                     AGENTBUREAU_INSTANCE_ID)
+                    conn.execute(
+                        f"UPDATE {local['table']} SET quality = ? WHERE content_hash = ?",
+                        (quality, chash),
+                    )
+                    stats["fields_changed"] += 1
+                    changed = True
+
+                if local["domain_specificity"] != domain_spec:
+                    _record_mutation(conn, chash, "domain_specificity",
+                                     str(local["domain_specificity"]), str(domain_spec),
+                                     AGENTBUREAU_INSTANCE_ID)
+                    conn.execute(
+                        f"UPDATE {local['table']} SET domain_specificity = ? WHERE content_hash = ?",
+                        (domain_spec, chash),
+                    )
+                    stats["fields_changed"] += 1
+                    changed = True
+
+                if local["domain"] != domain_json:
+                    _record_mutation(conn, chash, "domain",
+                                     local["domain"], domain_json,
+                                     AGENTBUREAU_INSTANCE_ID)
+                    conn.execute(
+                        f"UPDATE {local['table']} SET domain = ? WHERE content_hash = ?",
+                        (domain_json, chash),
+                    )
+                    stats["fields_changed"] += 1
+                    changed = True
+
+                csv_scope = row.get("scope", "task")
+                if local.get("scope", "task") != csv_scope:
+                    _record_mutation(conn, chash, "scope",
+                                     local.get("scope", "task"), csv_scope,
+                                     AGENTBUREAU_INSTANCE_ID)
+                    conn.execute(
+                        f"UPDATE {local['table']} SET scope = ? WHERE content_hash = ?",
+                        (csv_scope, chash),
+                    )
+                    stats["fields_changed"] += 1
+                    changed = True
+
+                if changed:
+                    conn.commit()
+                    stats["updated_primitives"] += 1
+                else:
+                    stats["unchanged"] += 1
+        except Exception as e:
+            conn.rollback()
+            stats["failed"] += 1
+            stats["failed_rows"].append({
+                "row": row_num,
+                "name": row.get("name", ""),
+                "error": str(e),
+            })
+            continue
 
     return stats
 
@@ -257,9 +295,18 @@ def install_primitives_cmd(instance_id: str):
         raise SystemExit(1)
 
     conn = _get_db()
-    inserted, skipped = install_from_csv(rows, conn, instance_id)
+    stats = install_from_csv(rows, conn, instance_id)
     conn.close()
-    click.echo(f"{inserted} primitives installed ({skipped} skipped).")
+    click.echo(f"{stats['inserted']} primitives installed ({stats['skipped']} skipped).")
+    if stats["failed"]:
+        click.echo(f"\nFailed: {stats['failed']} row(s)")
+        for f in stats["failed_rows"]:
+            click.echo(f"  Row {f['row']}: {f['error']}")
+        click.echo(
+            f"\nYour database now contains all {stats['inserted']} successfully "
+            f"processed primitives.\nNo action required — failed rows do not "
+            f"affect successful rows."
+        )
 
 
 @primitives_command.command("update")
@@ -287,6 +334,19 @@ def update_primitives_cmd(instance_id: str):
         f"{stats['updated_primitives']} primitives\n"
         f"  Unchanged: {stats['unchanged']}"
     )
+    if stats.get("failed"):
+        click.echo(f"  Failed:    {stats['failed']} row(s)\n")
+        click.echo("Failed rows:")
+        for f in stats["failed_rows"]:
+            click.echo(f"  Row {f['row']}: {f['error']}")
+        click.echo(
+            f"\nYour database now contains all {stats['new']} successfully "
+            f"processed primitives.\nNo action required — failed rows do not "
+            f"affect successful rows.\nEach row is committed independently. "
+            f"The failed row will be retried\non next update; if the upstream "
+            f"CSV still contains the duplicate,\nit will fail again with the "
+            f"same message."
+        )
 
 
 @primitives_command.command("list")

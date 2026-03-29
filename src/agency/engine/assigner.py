@@ -3,7 +3,7 @@ import logging
 import os
 import sqlite3
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agency.db.primitives import find_similar
@@ -21,7 +21,11 @@ from agency.engine.constants import (
     ASSIGNER_LLM_TIMEOUT,
     ASSIGNER_LLM_MAX_RETRIES,
     ASSIGNER_FALLBACK_LOG,
+    COMPOSITION_FITNESS_FLOOR,
+    COMPOSITION_FITNESS_GOOD_THRESHOLD,
+    TASK_TYPE_KEYWORDS,
 )
+from agency.engine.classifier import classify_task_type
 from agency.utils.hashing import content_hash
 from agency.utils.ids import new_uuid
 from agency.utils.errors import PrimitiveStoreEmpty
@@ -50,7 +54,7 @@ def _log_fallback(task_id: str, failure_mode: str, slot_affected: str, detail: s
     log_path = Path(os.path.expanduser(ASSIGNER_FALLBACK_LOG))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "task_id": task_id,
         "failure_mode": failure_mode,
         "slot_affected": slot_affected,
@@ -241,29 +245,76 @@ def _assign_via_llm(
     return None
 
 
+def find_similar_with_type_filter(
+    db: sqlite3.Connection, table: str, query: str,
+    limit: int, task_type: str,
+) -> list[dict]:
+    """Two-pass retrieval: type-filtered first, full-pool fallback for unfilled slots."""
+    type_keywords = TASK_TYPE_KEYWORDS.get(task_type, [])
+    type_filtered = find_similar(
+        db, table, query, limit=limit,
+        keyword_filter=type_keywords if type_keywords else None,
+    )
+    for r in type_filtered:
+        r["retrieval_pass"] = "type_filtered"
+
+    unfilled = limit - len(type_filtered)
+    if unfilled <= 0:
+        return type_filtered
+
+    already_selected_ids = {r["id"] for r in type_filtered}
+    fallback = find_similar(
+        db, table, query, limit=unfilled,
+        exclude_ids=already_selected_ids,
+    )
+    for r in fallback:
+        r["retrieval_pass"] = "full_pool"
+
+    return type_filtered + fallback
+
+
 def _assign_via_embedding(
     db: sqlite3.Connection, task_id: str, task: dict,
     skills: list[str] | None = None,
-) -> tuple:
-    """Run the embedding-based assignment path. Returns (role_results,
-    outcome_results, tradeoff_results) after boost and floor."""
-    task_description = task.get("task_description", "")
+) -> dict:
+    """Run the embedding-based assignment path.
 
-    role_results = find_similar(db, "role_components", task_description, limit=3)
+    Returns dict with:
+      "results": (role_results, outcome_results, tradeoff_results) — post-floor
+      "raw_candidates": (raw_role, raw_outcome, raw_tradeoff) — pre-floor
+      "task_type": str
+    """
+    task_description = task.get("task_description", "")
+    task_type = classify_task_type(task_description)
+
+    role_results = find_similar_with_type_filter(
+        db, "role_components", task_description, limit=3, task_type=task_type,
+    )
     if not role_results:
         raise PrimitiveStoreEmpty("No role components in primitive store")
     _apply_skill_boost(role_results, skills)
+    raw_role_candidates = list(role_results)
     role_results = _apply_relevance_floor(role_results)
 
-    outcome_results = find_similar(db, "desired_outcomes", task_description, limit=1)
+    outcome_results = find_similar_with_type_filter(
+        db, "desired_outcomes", task_description, limit=1, task_type=task_type,
+    )
     _apply_skill_boost(outcome_results, skills)
+    raw_outcome_candidates = list(outcome_results)
     outcome_results = _apply_relevance_floor(outcome_results)
 
-    tradeoff_results = find_similar(db, "trade_off_configs", task_description, limit=1)
+    tradeoff_results = find_similar_with_type_filter(
+        db, "trade_off_configs", task_description, limit=1, task_type=task_type,
+    )
     _apply_skill_boost(tradeoff_results, skills)
+    raw_tradeoff_candidates = list(tradeoff_results)
     tradeoff_results = _apply_relevance_floor(tradeoff_results)
 
-    return role_results, outcome_results, tradeoff_results
+    return {
+        "results": (role_results, outcome_results, tradeoff_results),
+        "raw_candidates": (raw_role_candidates, raw_outcome_candidates, raw_tradeoff_candidates),
+        "task_type": task_type,
+    }
 
 
 def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
@@ -285,7 +336,11 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
     if cfg:
         strategy = cfg.get("assigner", {}).get(ASSIGNER_STRATEGY_KEY, ASSIGNER_STRATEGY_EMBEDDING)
 
+    # Pre-classify task type (Issue 8) — once, before strategy branch
+    task_type = classify_task_type(task_description)
+
     llm_result = None
+    emb_result = None
     if strategy == ASSIGNER_STRATEGY_LLM:
         llm_result = _assign_via_llm(db, task_id, task_description, skills)
 
@@ -308,21 +363,19 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
         outcome_results = [outcome_map[oid] for oid in outcome_ids if oid in outcome_map]
         tradeoff_results = [tradeoff_map[tid] for tid in tradeoff_ids if tid in tradeoff_map]
 
-        # Per-slot embedding fallback for empty slots (hallucinated IDs were stripped)
-        if not role_results:
-            emb_role, _, _ = _assign_via_embedding(db, task_id, task, skills)
-            role_results = emb_role
-        if not outcome_results:
-            _, emb_out, _ = _assign_via_embedding(db, task_id, task, skills)
-            outcome_results = emb_out
-        if not tradeoff_results:
-            _, _, emb_tc = _assign_via_embedding(db, task_id, task, skills)
-            tradeoff_results = emb_tc
+        # LLM fallback — call embedding path once, reuse for all empty slots
+        if not role_results or not outcome_results or not tradeoff_results:
+            emb_result = _assign_via_embedding(db, task_id, task, skills)
+            if not role_results:
+                role_results = emb_result["results"][0]
+            if not outcome_results:
+                outcome_results = emb_result["results"][1]
+            if not tradeoff_results:
+                tradeoff_results = emb_result["results"][2]
     else:
         # Full embedding path
-        role_results, outcome_results, tradeoff_results = _assign_via_embedding(
-            db, task_id, task, skills,
-        )
+        emb_result = _assign_via_embedding(db, task_id, task, skills)
+        role_results, outcome_results, tradeoff_results = emb_result["results"]
 
     role_component_ids = [r["id"] for r in role_results]
     role_component_texts = [r["description"] for r in role_results]
@@ -353,6 +406,13 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
         project_id=project_id,
         template_id=template_id,
     )
+
+    # Track assignment counts for explore/exploit (Issue 25)
+    try:
+        from agency.db.performance import increment_assignment_counts
+        increment_assignment_counts(db, role_component_ids, desired_outcome_id, trade_off_config_id)
+    except Exception as e:
+        logger.warning("Assignment count increment failed: %s", e)
 
     composition_hash = content_hash(json.dumps(sorted(role_component_ids)))
 
@@ -387,6 +447,20 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
     # Composition fitness metadata (§4.4.2c / §4.4.3)
     all_selected = role_results + outcome_results + tradeoff_results
 
+    # Mean fitness and advisory band (Issue 4)
+    fitness_floor = (
+        (cfg or {}).get("assigner", {}).get("composition_fitness_floor")
+        or COMPOSITION_FITNESS_FLOOR
+    )
+    similarities = [r.get("similarity", 0) for r in all_selected if r.get("id")]
+    mean_fitness = sum(similarities) / len(similarities) if similarities else 0.0
+    if mean_fitness < fitness_floor:
+        pool_match = "low"
+    elif mean_fitness < COMPOSITION_FITNESS_GOOD_THRESHOLD:
+        pool_match = "moderate"
+    else:
+        pool_match = "good"
+
     if llm_result is not None:
         # LLM path: use the LLM's fitness verdict and pool coverage warning
         composition_fitness = {
@@ -396,7 +470,10 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
             },
             "pool_coverage_warning": llm_result.get("pool_coverage_warning", False),
             "fitness_verdict": llm_result.get("fitness_verdict", "marginal"),
-            "task_classification": llm_result.get("task_classification", ""),
+            "task_classification": task_type,
+            "task_type": task_type,
+            "mean_fitness": round(mean_fitness, 4),
+            "pool_match": pool_match,
             "slots_filled": {
                 "role_components": len(role_component_ids),
                 "desired_outcomes": 1 if desired_outcome_id else 0,
@@ -418,6 +495,9 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
                 r.get("similarity", 0) >= POOL_COVERAGE_WARNING_THRESHOLD
                 for r in all_selected
             ),
+            "task_type": task_type,
+            "mean_fitness": round(mean_fitness, 4),
+            "pool_match": pool_match,
             "slots_filled": {
                 "role_components": len(role_component_ids),
                 "desired_outcomes": 1 if desired_outcome_id else 0,

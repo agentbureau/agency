@@ -18,6 +18,7 @@ class EvaluationReport(BaseModel):
     estimated_tokens: Optional[int] = None
     task_agent: Optional[dict] = None
     evaluator_agent: Optional[dict] = None
+    dimensional_scores: Optional[dict] = None
 
     @field_validator("score")
     @classmethod

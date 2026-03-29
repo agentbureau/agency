@@ -2,6 +2,8 @@ import tomllib
 import tomli_w
 from pathlib import Path
 
+from agency.constants import GITHUB_ORG, GITHUB_REPO
+
 REQUIRED_FIELDS = [
     "instance_id",
     "server.host",
@@ -77,7 +79,7 @@ def default_config(instance_id: str) -> dict:
             "endpoint": None,
         },
         "status": {
-            "url": "https://raw.githubusercontent.com/[owner]/agency/main/agency-status.json",
+            "url": f"https://raw.githubusercontent.com/{GITHUB_ORG}/{GITHUB_REPO}/main/agency-status.json",
             "last_checked": None,
         },
     }
