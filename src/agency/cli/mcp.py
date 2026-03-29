@@ -98,6 +98,30 @@ NEXT_STEP_STATUS_DEFAULT = (
 
 
 # ---------------------------------------------------------------------------
+# Session-level status polling (Issue 27 Phase 2)
+# ---------------------------------------------------------------------------
+_status_fetched_this_session: bool = False
+_session_status = None  # StatusFile | None
+
+
+def _maybe_fetch_status() -> None:
+    """Fetch status file on first MCP tool call per session."""
+    global _status_fetched_this_session, _session_status
+    if _status_fetched_this_session:
+        return
+    _status_fetched_this_session = True
+    cfg = _read_toml_config()
+    status_url = cfg.get("status", {}).get("url", "")
+    if not status_url or "[owner]" in status_url:
+        return
+    try:
+        from agency.status.poller import fetch_status
+        _session_status = fetch_status(status_url)
+    except Exception:
+        pass  # Fetch failure must never block tool execution
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -554,6 +578,119 @@ def _tool_agency_create_project(
         ))
 
 
+def _version_notification(session_status) -> dict | None:
+    """Check if a newer Agency version is available (Issue 27 Phase 3)."""
+    if not session_status or not session_status.latest_version:
+        return None
+    try:
+        from agency import __version__
+        from packaging.version import Version
+        current = Version(__version__)
+        latest = Version(session_status.latest_version)
+        if latest > current:
+            return {
+                "current_version": str(current),
+                "latest_version": str(latest),
+                "message": f"Agency {latest} is available (you are running {current}). "
+                           f"Update: pipx upgrade agency-engine",
+            }
+    except Exception:
+        pass
+    return None
+
+
+def _unseen_announcements(session_status, conn) -> list[dict]:
+    """Return announcements not yet seen by this instance (Issue 27 Phase 3)."""
+    from datetime import datetime, timezone
+    from agency.constants import PRIMITIVES_UPDATE_ENTRY_ID
+
+    if not session_status:
+        return []
+    all_entries = (
+        session_status.updates +
+        session_status.bugs_reported +
+        session_status.bugs_fixed +
+        session_status.primitives +
+        session_status.research +
+        session_status.system.notices
+    )
+    seen_ids = {row[0] for row in conn.execute(
+        "SELECT id FROM seen_announcement_ids"
+    ).fetchall()}
+    # Exclude primitives update entry — handled by _primitives_update_advisory()
+    unseen = [e for e in all_entries
+              if e.id not in seen_ids and e.id != PRIMITIVES_UPDATE_ENTRY_ID]
+    now = datetime.now(timezone.utc).isoformat()
+    for e in unseen:
+        conn.execute(
+            "INSERT OR IGNORE INTO seen_announcement_ids (id, section, seen_at) VALUES (?, ?, ?)",
+            (e.id, e.section, now),
+        )
+    conn.commit()
+    return [{"id": e.id, "severity": e.severity, "message": e.message, "url": e.url}
+            for e in unseen]
+
+
+def _primitives_update_advisory(session_status) -> dict | None:
+    """Check for primitives update signal in status file (Issue 27 Phase 4)."""
+    from agency.constants import PRIMITIVES_UPDATE_ENTRY_ID
+
+    if not session_status:
+        return None
+    for entry in session_status.primitives:
+        if entry.id == PRIMITIVES_UPDATE_ENTRY_ID:
+            return {
+                "message": entry.message,
+                "action": "Run `agency primitives update` or call agency_update_primitives",
+            }
+    return None
+
+
+def _tool_agency_update_primitives(base_url: str, token: str) -> str:
+    """Fetch latest starter CSV and reconcile with local primitive store (Issue 14a)."""
+    from agency.cli.primitives import _fetch_csv, reconcile_from_csv, _get_db, STARTER_CSV_URL
+
+    try:
+        rows = _fetch_csv(STARTER_CSV_URL)
+    except Exception as e:
+        return json.dumps(_make_error(
+            error_type="transient",
+            code=None,
+            message=f"Could not fetch starter CSV: {e}",
+            cause="Network error or GitHub unavailable.",
+            fix="Check your internet connection and try again.",
+        ))
+
+    try:
+        conn = _get_db()
+        cfg = _read_toml_config()
+        instance_id = cfg.get("instance_id", "default")
+        stats = reconcile_from_csv(rows, conn, instance_id)
+        conn.close()
+    except Exception as e:
+        return json.dumps(_make_error(
+            error_type="permanent",
+            code=None,
+            message=f"Reconciliation failed: {e}",
+            cause="Database error during primitive update.",
+            fix="Check ~/.agency/agency.db is accessible. Run 'agency init' if needed.",
+        ))
+
+    return json.dumps({
+        "status": "ok",
+        "new": stats["new"],
+        "updated_primitives": stats["updated_primitives"],
+        "fields_changed": stats["fields_changed"],
+        "unchanged": stats["unchanged"],
+        "below_threshold": stats.get("below_threshold", 0),
+        "failed": stats.get("failed", 0),
+        "next_step": (
+            "Primitive pool updated. New primitives will be used in "
+            "subsequent agency_assign calls."
+        ),
+    })
+
+
 def _tool_agency_status(
     base_url: str, token: str, project_id: Optional[str] = None
 ) -> str:
@@ -592,6 +729,27 @@ def _tool_agency_status(
                 next_step = NEXT_STEP_STATUS_DEFAULT
 
             data["next_step"] = next_step
+
+            # Issue 27 Phase 3+4: inject status notifications
+            if _session_status:
+                version_note = _version_notification(_session_status)
+                if version_note:
+                    data["version_update_available"] = version_note
+                try:
+                    from agency.cli.primitives import _get_db
+                    _conn = _get_db()
+                    try:
+                        announcements = _unseen_announcements(_session_status, _conn)
+                        if announcements:
+                            data["announcements"] = announcements
+                    finally:
+                        _conn.close()
+                except Exception:
+                    pass
+                prim_advisory = _primitives_update_advisory(_session_status)
+                if prim_advisory:
+                    data["primitives_update_available"] = prim_advisory
+
             return json.dumps(data)
         return json.dumps(_make_error(
             error_type=_classify_error(resp.status_code),
@@ -848,6 +1006,19 @@ async def _run_mcp_server():
                 },
             ),
             types.Tool(
+                name="agency_update_primitives",
+                description=(
+                    "Update the local primitive pool from the upstream starter CSV. "
+                    "Fetches the latest primitives from GitHub, reconciles with the "
+                    "local store (inserts new, updates changed fields, skips unchanged). "
+                    "No parameters required."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            types.Tool(
                 name="agency_status",
                 description=(
                     "Get Agency instance status: projects, active tasks, task progress, "
@@ -870,6 +1041,9 @@ async def _run_mcp_server():
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
+        # Status file polling — first call per session (Issue 27 Phase 2)
+        _maybe_fetch_status()
+
         # Pre-dispatch health check — restart server if it died mid-session
         if not _check_health(base_url):
             _ensure_server(base_url)
@@ -916,6 +1090,8 @@ async def _run_mcp_server():
                 attribution=arguments.get("attribution"),
                 set_as_default=arguments.get("set_as_default", False),
             )
+        elif name == "agency_update_primitives":
+            result = _tool_agency_update_primitives(base_url, token)
         elif name == "agency_status":
             result = _tool_agency_status(
                 base_url, token, project_id=arguments.get("project_id")

@@ -13,6 +13,7 @@ class StatusEntry:
     url: str | None = None
     affects_versions: list[str] = field(default_factory=list)
     fixed_in_version: str | None = None
+    section: str = ""
 
 
 @dataclass
@@ -34,7 +35,7 @@ class StatusFile:
     system: SystemStatus = field(default_factory=SystemStatus)
 
 
-def _parse_entries(raw: list | None) -> list[StatusEntry]:
+def _parse_entries(raw: list | None, section: str = "") -> list[StatusEntry]:
     if not isinstance(raw, list):
         return []
     entries = []
@@ -48,6 +49,7 @@ def _parse_entries(raw: list | None) -> list[StatusEntry]:
             url=item.get("url"),
             affects_versions=item.get("affects_versions", []),
             fixed_in_version=item.get("fixed_in_version"),
+            section=section,
         ))
     return entries
 
@@ -69,11 +71,11 @@ def parse_status_file(data) -> "StatusFile | None":
         return StatusFile(
             latest_version=data.get("latest_version"),
             min_supported_version=data.get("min_supported_version"),
-            updates=_parse_entries(data.get("updates")),
-            bugs_reported=_parse_entries(data.get("bugs_reported")),
-            bugs_fixed=_parse_entries(data.get("bugs_fixed")),
-            primitives=_parse_entries(data.get("primitives")),
-            research=_parse_entries(data.get("research")),
+            updates=_parse_entries(data.get("updates"), section="updates"),
+            bugs_reported=_parse_entries(data.get("bugs_reported"), section="bugs_reported"),
+            bugs_fixed=_parse_entries(data.get("bugs_fixed"), section="bugs_fixed"),
+            primitives=_parse_entries(data.get("primitives"), section="primitives"),
+            research=_parse_entries(data.get("research"), section="research"),
             system=_parse_system(data.get("system")),
         )
     except Exception:

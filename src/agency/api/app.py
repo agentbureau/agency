@@ -71,11 +71,16 @@ async def lifespan(app: FastAPI):
     app.state.config = cfg
 
     status_url = cfg.get("status", {}).get("url")
+    app.state.status = None
     if status_url:
         try:
-            fetch_status(status_url)
-        except Exception:
-            pass
+            status_result = fetch_status(status_url)
+            if status_result:
+                app.state.status = status_result
+                logger.info("Status file fetched: latest_version=%s",
+                            getattr(status_result, "latest_version", "unknown"))
+        except Exception as e:
+            logger.warning("Status file fetch failed — notifications will be unavailable: %s", e)
 
     yield
     conn.close()

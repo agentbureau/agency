@@ -33,6 +33,7 @@ dependencies = [
     "click>=8.1",
     "python-multipart>=0.0.9",
     "watchdog>=3.0",
+    "packaging>=21.0",
 ]
 
 [project.urls]

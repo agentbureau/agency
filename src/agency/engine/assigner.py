@@ -317,6 +317,39 @@ def _assign_via_embedding(
     }
 
 
+def _persist_candidates(
+    conn: sqlite3.Connection,
+    task_id: str,
+    role_candidates: list[dict],
+    outcome_candidates: list[dict],
+    tradeoff_candidates: list[dict],
+    selected_ids: set[str],
+) -> None:
+    """Persist assignment candidates for experiment tracking (Issue 22)."""
+    rows = []
+    for ptype, candidates in [
+        ("role_component", role_candidates),
+        ("desired_outcome", outcome_candidates),
+        ("trade_off_config", tradeoff_candidates),
+    ]:
+        for c in candidates:
+            rows.append((
+                new_uuid(), task_id, c["id"], ptype,
+                c.get("similarity", 0.0),
+                1 if c["id"] in selected_ids else 0,
+                c.get("retrieval_pass", "full_pool"),
+            ))
+    if rows:
+        conn.executemany(
+            """INSERT INTO assignment_candidates
+               (id, task_id, primitive_id, primitive_type, similarity_score,
+                was_selected, retrieval_pass)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+
+
 def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
                  cfg: dict | None = None, skills: list[str] | None = None) -> dict:
     """
@@ -385,6 +418,27 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
 
     trade_off_config = tradeoff_results[0]["description"] if tradeoff_results else "Balance quality and speed"
     trade_off_config_id = tradeoff_results[0]["id"] if tradeoff_results else None
+
+    # Persist assignment candidates for experiment tracking (Issue 22)
+    selected_ids = set(role_component_ids)
+    if desired_outcome_id:
+        selected_ids.add(desired_outcome_id)
+    if trade_off_config_id:
+        selected_ids.add(trade_off_config_id)
+    try:
+        if llm_result is not None:
+            raw_role = llm_result["_role_candidates"]
+            raw_outcome = llm_result["_outcome_candidates"]
+            raw_tradeoff = llm_result["_tradeoff_candidates"]
+        elif emb_result is not None:
+            raw_role = emb_result["raw_candidates"][0]
+            raw_outcome = emb_result["raw_candidates"][1]
+            raw_tradeoff = emb_result["raw_candidates"][2]
+        else:
+            raw_role = raw_outcome = raw_tradeoff = []
+        _persist_candidates(db, task_id, raw_role, raw_outcome, raw_tradeoff, selected_ids)
+    except Exception as e:
+        logger.warning("Candidate persistence failed: %s", e)
 
     # Select template
     templates = list_templates(db, template_type="task_agent", instance_id=instance_id)
@@ -509,6 +563,14 @@ def assign_agent(db: sqlite3.Connection, task_id: str, task: dict,
                 "trade_off_configs": 0 if trade_off_config_id else 1,
             },
         }
+
+    # Capability caveat for research tasks (Issues 5-6)
+    if task_type == "research":
+        composition_fitness["capability_caveat"] = (
+            "Agency's advantage is weakest on research tasks requiring "
+            "domain-specific knowledge. Composition primitives frame how "
+            "to think — they cannot supply what to know."
+        )
 
     return {
         "agent_id": agent_id,

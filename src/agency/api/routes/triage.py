@@ -1,7 +1,16 @@
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from agency.db.primitives import find_similar
-from agency.engine.constants import TRIAGE_TOP_N, METAPRIMITIVE_SIMILARITY_THRESHOLD
+from agency.engine.classifier import classify_task_type, estimate_method_absence
+from agency.engine.constants import (
+    TRIAGE_TOP_N,
+    METAPRIMITIVE_SIMILARITY_THRESHOLD,
+    COMPOSITION_FITNESS_FLOOR,
+    COMPOSITION_FITNESS_GOOD_THRESHOLD,
+    AGENCY_PROBABILITY_BY_TYPE,
+    METHOD_ABSENCE_HIGH,
+    METHOD_ABSENCE_MODERATE,
+)
 
 router = APIRouter(tags=["triage"])
 
@@ -9,6 +18,37 @@ router = APIRouter(tags=["triage"])
 class TriageRequest(BaseModel):
     description: str
     project_id: str | None = None
+
+
+def compute_recommendation(
+    task_type_probability: str,
+    fitness_band: str,
+    method_absence: float,
+) -> tuple[str, str | None]:
+    """Compute compose recommendation from three signals.
+
+    Returns: (recommendation, reason | None)
+    """
+    # Unlikely to help: fitness below floor
+    if fitness_band == "low":
+        return ("compose_unlikely_to_help",
+                "Composition fitness below 0.39 floor — primitive pool has "
+                "insufficient semantic overlap with this task.")
+
+    # Unlikely to help: CC-favoured task type + low method absence
+    if task_type_probability == "low" and method_absence < METHOD_ABSENCE_MODERATE:
+        return ("compose_unlikely_to_help",
+                "Task type is CC-favoured and the prompt already prescribes "
+                "the analytical method — Agency unlikely to add value.")
+
+    # Compose with advisory: mixed signals
+    if task_type_probability == "low":
+        return ("compose_with_advisory", None)
+    if method_absence < METHOD_ABSENCE_MODERATE:
+        return ("compose_with_advisory", None)
+
+    # Compose: all signals favourable
+    return ("compose", None)
 
 
 @router.post("/triage", status_code=200)
@@ -24,8 +64,11 @@ def triage(req: TriageRequest, request: Request):
 
     conn = request.app.state.db
 
+    # Signal 1: task type
+    task_type = classify_task_type(req.description)
+    task_type_probability = AGENCY_PROBABILITY_BY_TYPE.get(task_type, "neutral")
+
     try:
-        # Search all three slot types with scope='task'
         role_results = find_similar(conn, "role_components", req.description,
                                      limit=TRIAGE_TOP_N, scope="task")
         outcome_results = find_similar(conn, "desired_outcomes", req.description,
@@ -59,7 +102,6 @@ def triage(req: TriageRequest, request: Request):
             deduped.append(r)
     matched = deduped[:TRIAGE_TOP_N]
 
-    # Build response
     matched_primitives = [
         {"name": r.get("name", ""), "type": r["type"], "similarity": round(r.get("similarity", 0), 4)}
         for r in matched
@@ -70,29 +112,69 @@ def triage(req: TriageRequest, request: Request):
     if not all_results:
         warning = "No primitives installed. Run agency primitives update to download starter primitives."
 
-    # Recommendation logic
-    has_strong_match = any(r.get("similarity", 0) >= METAPRIMITIVE_SIMILARITY_THRESHOLD for r in matched)
-
-    if matched:
-        strongest = matched[0]
-        strongest_name = strongest.get("name", "unknown")
-        strongest_sim = round(strongest.get("similarity", 0), 3)
-
-        if has_strong_match:
-            n_above = sum(1 for r in matched if r.get("similarity", 0) >= METAPRIMITIVE_SIMILARITY_THRESHOLD)
-            recommendation = "compose"
-            reasoning = f"Matched {n_above} primitive(s) above {METAPRIMITIVE_SIMILARITY_THRESHOLD} similarity; strongest match: '{strongest_name}' at {strongest_sim}."
-        else:
-            recommendation = "skip-safe"
-            reasoning = f"No primitive exceeded {METAPRIMITIVE_SIMILARITY_THRESHOLD} similarity; strongest match: '{strongest_name}' at {strongest_sim}. Composition would fill slots with low-relevance primitives."
+    # Signal 2: fitness estimate
+    similarities = [r.get("similarity", 0) for r in matched]
+    fitness_estimate = sum(similarities) / len(similarities) if similarities else 0.0
+    if fitness_estimate < COMPOSITION_FITNESS_FLOOR:
+        fitness_band = "low"
+    elif fitness_estimate < COMPOSITION_FITNESS_GOOD_THRESHOLD:
+        fitness_band = "moderate"
     else:
-        recommendation = "skip-safe"
-        reasoning = "No primitives in store."
+        fitness_band = "good"
 
-    return {
+    # Signal 3: method absence
+    method_absence = estimate_method_absence(req.description)
+    if method_absence >= METHOD_ABSENCE_HIGH:
+        method_absence_band = "high"
+    elif method_absence >= METHOD_ABSENCE_MODERATE:
+        method_absence_band = "moderate"
+    else:
+        method_absence_band = "low"
+
+    # Combined recommendation
+    recommendation, reason = compute_recommendation(
+        task_type_probability, fitness_band, method_absence,
+    )
+
+    # Reasoning text
+    method_note = (
+        "analytical method not specified — Agency can fill the gap"
+        if method_absence >= METHOD_ABSENCE_HIGH
+        else "analytical method partially or fully specified in prompt"
+    )
+    reasoning = (
+        f"Task type: {task_type} ({task_type_probability} Agency probability). "
+        f"Fitness estimate: {fitness_estimate:.3f} ({fitness_band}). "
+        f"Method absence: {method_absence:.1f} ({method_note}). "
+        f"Recommendation: {recommendation}."
+    )
+
+    response = {
         "matched_primitives": matched_primitives,
-        "task_type": "unclassified",
+        "task_type": task_type,
+        "fitness_estimate": round(fitness_estimate, 4),
+        "method_absence_estimate": round(method_absence, 2),
         "recommendation": recommendation,
         "reasoning": reasoning,
+        "signals": {
+            "task_type": task_type,
+            "task_type_agency_probability": task_type_probability,
+            "fitness_estimate": round(fitness_estimate, 4),
+            "fitness_band": fitness_band,
+            "method_absence_estimate": round(method_absence, 2),
+            "method_absence_band": method_absence_band,
+        },
         "warning": warning,
     }
+    if reason is not None:
+        response["reason"] = reason
+
+    # Capability caveat for research tasks (Issues 5-6)
+    if task_type == "research":
+        response["capability_caveat"] = (
+            "Agency's advantage is weakest on research tasks requiring "
+            "domain-specific knowledge. Composition primitives frame how "
+            "to think — they cannot supply what to know."
+        )
+
+    return response

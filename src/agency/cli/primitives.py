@@ -26,6 +26,9 @@ STARTER_CSV_URL = (
 )
 QUALITY_THRESHOLD = 90
 
+REQUIRED_COLUMNS = {"type", "name", "description"}
+VALID_TYPES = {"role_component", "desired_outcome", "trade_off_config"}
+
 
 def _fetch_csv(url: str) -> list[dict]:
     resp = httpx.get(url, timeout=30, follow_redirects=True)
@@ -362,3 +365,102 @@ def list_primitives(table: str):
         return
     for rid, desc, quality in rows:
         click.echo(f"  {rid}  [q={quality}] {desc[:70]}")
+
+
+def _read_local_csv(path: str) -> list[dict]:
+    """Read and parse a local CSV file."""
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+
+def _validate_csv_row(row: dict, row_num: int) -> tuple[bool, str | None]:
+    """Return (valid, error_message)."""
+    for col in REQUIRED_COLUMNS:
+        if not row.get(col, "").strip():
+            return False, f"Row {row_num}: missing or empty required column '{col}'"
+    if row["type"] not in VALID_TYPES:
+        return False, f"Row {row_num}: invalid type '{row['type']}' — must be one of: {', '.join(sorted(VALID_TYPES))}"
+    return True, None
+
+
+@primitives_command.command("import")
+@click.argument("path", type=click.Path(exists=True, readable=True))
+@click.option("--instance-id", default="default", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Validate and report without inserting.")
+def import_primitives_cmd(path: str, instance_id: str, dry_run: bool):
+    """Import primitives from a local CSV file."""
+    try:
+        rows = _read_local_csv(path)
+    except Exception as e:
+        click.echo(f"Error reading CSV: {e}")
+        raise SystemExit(1)
+
+    if not rows:
+        click.echo("CSV file is empty.")
+        return
+
+    # Check that 'name' column exists in the CSV
+    if "name" not in rows[0]:
+        click.echo(
+            "Error: name column is required — run the extraction skill to "
+            "generate names, or add them manually."
+        )
+        raise SystemExit(1)
+
+    conn = None if dry_run else _get_db()
+    existing = {} if dry_run else _get_existing_by_hash(conn)
+    stats = {"added": 0, "skipped": 0, "failed": 0, "failed_rows": []}
+
+    for row_num, row in enumerate(rows, start=1):
+        valid, err = _validate_csv_row(row, row_num)
+        if not valid:
+            stats["failed"] += 1
+            stats["failed_rows"].append({"row": row_num, "error": err})
+            continue
+
+        desc = row["description"]
+        chash = content_hash(desc)
+        if chash in existing:
+            stats["skipped"] += 1
+            continue
+
+        if dry_run:
+            stats["added"] += 1
+            continue
+
+        try:
+            table = TYPE_TO_TABLE[row["type"]]
+            domain_json = _parse_domain(row.get("domain", ""))
+            insert_primitive(
+                conn, table,
+                description=desc,
+                instance_id=instance_id,
+                name=row.get("name", ""),
+                quality=int(row.get("quality", 100)),
+                domain_specificity=int(row.get("domain_specificity", 0)),
+                domain=domain_json,
+                origin_instance_id=row.get("origin_instance_id", AGENTBUREAU_INSTANCE_ID),
+                parent_content_hash=row.get("parent_content_hash") or None,
+                scope=row.get("scope", "task"),
+                # Intentionally overrides CSV created_by — import command records provenance, not origin
+                created_by="import",
+                generation=0,
+                parent_ids=row.get("parent_ids") or None,
+            )
+            existing[chash] = {"table": table}
+            stats["added"] += 1
+        except Exception as e:
+            conn.rollback()
+            stats["failed"] += 1
+            stats["failed_rows"].append({"row": row_num, "error": str(e)})
+
+    if conn:
+        conn.close()
+
+    mode = "(dry run) " if dry_run else ""
+    click.echo(f"{mode}Import complete: {stats['added']} added, {stats['skipped']} skipped (duplicate), {stats['failed']} failed.")
+    if stats["failed_rows"]:
+        click.echo("\nFailed rows:")
+        for f in stats["failed_rows"]:
+            click.echo(f"  {f['error']}")

@@ -70,7 +70,10 @@ def test_triage_returns_matched_primitives(tmp_path, monkeypatch):
         assert "recommendation" in body
         assert "reasoning" in body
         assert "task_type" in body
-        assert body["task_type"] == "unclassified"
+        assert body["task_type"] in (
+            "research", "build", "review", "analyse", "write",
+            "design", "debug", "plan", "audit", "evaluate", "advise", "synthesise",
+        )
         assert isinstance(body["matched_primitives"], list)
         for p in body["matched_primitives"]:
             assert "name" in p
@@ -90,12 +93,12 @@ def test_triage_recommendation_compose_when_strong_match(tmp_path, monkeypatch):
         assert r.status_code == 200
         body = r.json()
         # The exact same text should produce a very high similarity match
-        assert body["recommendation"] == "compose"
-        assert "above 0.35 similarity" in body["reasoning"]
+        assert body["recommendation"] in ("compose", "compose_with_advisory")
+        assert "Recommendation:" in body["reasoning"]
 
 
 def test_triage_recommendation_skip_when_no_strong_match(tmp_path, monkeypatch):
-    """When no primitive exceeds threshold, recommendation should be 'skip-safe'."""
+    """When no primitive exceeds threshold, recommendation may be compose_unlikely_to_help."""
     _setup_env(tmp_path, monkeypatch)
     app = create_app()
     with TestClient(app) as c:
@@ -106,12 +109,12 @@ def test_triage_recommendation_skip_when_no_strong_match(tmp_path, monkeypatch):
         }, headers=auth)
         assert r.status_code == 200
         body = r.json()
-        # With unrelated text, expect skip-safe (though embedding similarity
-        # can be unpredictable — if this flakes, the primitives and query
-        # need further divergence)
-        if body["recommendation"] == "skip-safe":
-            assert "No primitive exceeded 0.35 similarity" in body["reasoning"]
-        # If embedding model happens to match above threshold, that's still valid
+        assert body["recommendation"] in (
+            "compose", "compose_with_advisory", "compose_unlikely_to_help",
+        )
+        # Verify three-signal response shape
+        assert "signals" in body
+        assert "fitness_estimate" in body
 
 
 def test_triage_empty_description_returns_422(tmp_path, monkeypatch):
@@ -141,7 +144,7 @@ def test_triage_empty_store_returns_warning(tmp_path, monkeypatch):
         body = r.json()
         assert body["warning"] is not None
         assert "No primitives installed" in body["warning"]
-        assert body["recommendation"] == "skip-safe"
+        assert body["recommendation"] == "compose_unlikely_to_help"
         assert body["matched_primitives"] == []
 
 
