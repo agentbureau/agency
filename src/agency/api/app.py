@@ -70,6 +70,10 @@ async def lifespan(app: FastAPI):
     app.state.private_key = private_key
     app.state.config = cfg
 
+    # Step 7: Verify embedding dimensions, re-embed if model changed
+    from agency.utils.embedding import verify_and_fix_embeddings
+    verify_and_fix_embeddings(conn)
+
     status_url = cfg.get("status", {}).get("url")
     app.state.status = None
     if status_url:

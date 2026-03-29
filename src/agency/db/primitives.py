@@ -2,7 +2,7 @@ import json
 import sqlite3
 from agency.utils.ids import new_uuid
 from agency.utils.hashing import content_hash
-from agency.utils.embedding import embed, cosine_similarity
+from agency.utils.embedding import embed, embed_document, cosine_similarity
 from agency.engine.permissions import DEFAULT_PERMISSION
 
 PRIMITIVE_TABLES = ("role_components", "desired_outcomes", "trade_off_configs")
@@ -66,7 +66,7 @@ def insert_primitive(
         scope = "task"
     pid = new_uuid()
     hash_ = content_hash(description)
-    vec = embed(description)
+    vec = embed_document(description)
     if not name:
         name = description[:80]
     name = _deduplicate_name(conn, table, name)

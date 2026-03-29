@@ -803,21 +803,22 @@ def _step_init_database(state_dir: str, cfg: dict):
 
 
 def _embedding_model_cached() -> bool:
-    """Return True if all-MiniLM-L6-v2 is present in local sentence-transformers cache."""
+    """Return True if mdbr-leaf-mt-asym models are present in local sentence-transformers cache."""
     try:
         cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
         if os.path.exists(cache_dir):
-            return any("all-MiniLM-L6-v2" in d for d in os.listdir(cache_dir))
+            dirs = os.listdir(cache_dir)
+            return any("mdbr-leaf-mt" in d for d in dirs)
         return False
     except Exception:
         return False
 
 
 def _step_download_embedding_model():
-    wiz_status("Downloading embedding model (all-MiniLM-L6-v2, ~80MB)...")
+    wiz_status("Downloading embedding model (MongoDB/mdbr-leaf-mt-asym, ~1.4GB)...")
     from sentence_transformers import SentenceTransformer
 
-    SentenceTransformer("all-MiniLM-L6-v2")
+    SentenceTransformer("MongoDB/mdbr-leaf-mt-asym")
     wiz_status("Embedding model downloaded")
 
 

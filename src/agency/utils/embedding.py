@@ -9,7 +9,7 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "MongoDB/mdbr-leaf-mt-asym"
 
 
 def suppress_hf_warnings():
@@ -31,7 +31,66 @@ def _model():
 
 
 def embed(text: str) -> list[float]:
-    return _model().encode(text).tolist()
+    """Embed a task description (query). Uses the compact query model."""
+    return _model().encode_query(text).tolist()
+
+
+def embed_document(text: str) -> list[float]:
+    """Embed a primitive description (document). Uses the larger document model."""
+    return _model().encode_document(text).tolist()
+
+
+_reembed_checked = False
+
+
+def verify_and_fix_embeddings(db) -> None:
+    """Check stored embedding dimensions. If mismatched, re-embed automatically.
+
+    Called once on first agency_assign after server start. If dimensions match,
+    this is a no-op (one SQL query + one embed call). If they don't match,
+    re-embeds all primitives inline before returning.
+    """
+    global _reembed_checked
+    if _reembed_checked:
+        return
+    _reembed_checked = True
+
+    import json
+    from agency.db.primitives import PRIMITIVE_TABLES
+
+    row = db.execute("SELECT embedding FROM role_components LIMIT 1").fetchone()
+    if not row:
+        return
+    stored_dims = len(json.loads(row[0]))
+    test_vec = embed_document("test")
+    model_dims = len(test_vec)
+    if stored_dims == model_dims:
+        return
+
+    print(
+        "\nWe've updated to a more effective embedding model, and we're "
+        "re-embedding your pool of primitives. This is a one-time operation "
+        "that will take a few seconds.\n"
+    )
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "Embedding dimension mismatch (stored=%d, model=%d). Re-embedding...",
+        stored_dims, model_dims,
+    )
+
+    total = 0
+    for table in PRIMITIVE_TABLES:
+        rows = db.execute(f"SELECT id, description FROM {table}").fetchall()
+        for pid, description in rows:
+            vec = embed_document(description)
+            db.execute(
+                f"UPDATE {table} SET embedding = ? WHERE id = ?",
+                (json.dumps(vec), pid),
+            )
+            total += 1
+        db.commit()
+
+    print(f"Done — {total} primitives re-embedded.\n")
 
 
 def cosine_similarity(v1: list[float], v2: list[float]) -> float:
