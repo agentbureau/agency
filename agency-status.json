@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.2.4",
+  "latest_version": "1.2.4.1",
   "min_supported_version": "1.2.0",
   "updates": [
     {
       "id": "v1.2.4_release",
       "severity": "info",
       "message": "Agency v1.2.4 released: new embedding model (+0.264 fitness), task-type classifier, evaluation cascade, experiment tracking. Update: pipx upgrade agency-engine",
-      "url": "https://github.com/agentbureau/agency/releases/tag/v1.2.4"
+      "url": "https://github.com/agentbureau/agency/releases/tag/v1.2.4.1"
     }
   ],
   "bugs_reported": [],
