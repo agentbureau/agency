@@ -9,7 +9,7 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
-EMBEDDING_MODEL = "MongoDB/mdbr-leaf-mt-asym"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
 def suppress_hf_warnings():
@@ -31,13 +31,13 @@ def _model():
 
 
 def embed(text: str) -> list[float]:
-    """Embed a task description (query). Uses the compact query model."""
-    return _model().encode_query(text).tolist()
+    """Embed a task description (query)."""
+    return _model().encode(text).tolist()
 
 
 def embed_document(text: str) -> list[float]:
-    """Embed a primitive description (document). Uses the larger document model."""
-    return _model().encode_document(text).tolist()
+    """Embed a primitive description (document)."""
+    return _model().encode(text).tolist()
 
 
 _reembed_checked = False

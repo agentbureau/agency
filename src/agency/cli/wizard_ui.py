@@ -194,7 +194,7 @@ SETTING_HELP = {
     ),
     "embedding_model": (
         'Agency uses this model to match tasks to the right agent primitives.\n'
-        'Downloaded once (~1.4GB). Runs locally — no API calls needed.'
+        'Downloaded once (~80MB). Runs locally — no API calls needed.'
     ),
     "integration_tokens": (
         'Tokens authenticate different integrations with the Agency server.\n'

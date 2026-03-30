@@ -26,7 +26,7 @@ Agency is a standalone service for composing, assigning, evaluating, and evolvin
 
 Agency does not execute tasks. It composes and assigns agent descriptions; the task manager executes tasks using those descriptions. Agency works with any task management system, and Claude Code (which manages tasks too).
 
-v1.2.4 upgrades the embedding model to `MongoDB/mdbr-leaf-mt-asym` (asymmetric retrieval, +0.264 average fitness improvement), adds task-type pre-classification (12-type keyword classifier with two-pass retrieval), a composition fitness floor at 0.39 (advisory, not gate), a three-signal triage advisory (task type + fitness + method absence), evaluation cascade from compositions to individual primitives, experiment tracking (assignment candidate persistence), multi-dimensional evaluation storage, primitive lineage tracking (parent_ids, generation, created_by), explore/exploit assignment counting, a CLI primitive import command, an `agency_update_primitives` MCP tool, and status file operationalisation (version notifications, announcement tracking, primitives update advisory).
+v1.2.4 adds task-type pre-classification (12-type keyword classifier), a composition fitness floor at 0.39 (advisory, not gate), a three-signal triage advisory (task type + fitness + method absence), evaluation cascade from compositions to individual primitives, experiment tracking (assignment candidate persistence), multi-dimensional evaluation storage, primitive lineage tracking (parent_ids, generation, created_by), explore/exploit assignment counting, a CLI primitive import command, an `agency_update_primitives` MCP tool, and status file operationalisation (version notifications, announcement tracking, primitives update advisory).
 
 ---
 
@@ -65,24 +65,9 @@ v1.2.3 ships 7 starter assigner metaprimitives.
 
 `~/.agency/composition-rules.csv` governs how Agency's functional agents are composed. It is a watched file: changes take effect on the next composition call without server restart. Editable directly or via the `agency-composition-config` skill in Claude Code.
 
-### Embedding model (v1.2.4)
-
-Agency uses `MongoDB/mdbr-leaf-mt-asym`, an asymmetric retrieval model with separate encoders for queries and documents:
-
-- **Query encoder** (23M params) — encodes task descriptions via `embed()`. Compact and fast.
-- **Document encoder** (335M params) — encodes primitive descriptions via `embed_document()`. Produces richer representations for the stored corpus.
-
-Both encoders output 1024-dimensional vectors. The asymmetric architecture matches tasks to primitives more precisely than a symmetric model — average composition fitness improved from 0.405 to 0.669 across test prompts.
-
-**Auto-migration:** on first startup after upgrade from a prior version, Agency detects the dimension mismatch between stored embeddings (384-dim from the previous model) and the current model (1024-dim), then re-embeds all stored primitives automatically. This takes ~60–90 seconds and completes before the server accepts connections. No manual migration step required.
-
-**Download:** the model is ~1.4GB, downloaded automatically on first use. Runs locally — no API calls.
-
 ### Task-type classification (v1.2.4)
 
-Before embedding search, `classify_task_type(description)` categorises the task into one of twelve types: `research`, `build`, `review`, `analyse`, `write`, `design`, `debug`, `plan`, `audit`, `evaluate`, `advise`, `synthesise`. Falls back to `analyse` if no keywords match.
-
-The classifier filters the embedding path via two-pass retrieval: (1) type-filtered pass using keywords associated with the classified type, (2) full-pool fallback for unfilled slots. This ensures methodology primitives are discoverable even when domain vocabulary dominates the task description.
+Before embedding search, `classify_task_type(description)` categorises the task into one of twelve types: `research`, `build`, `review`, `analyse`, `write`, `design`, `debug`, `plan`, `audit`, `evaluate`, `advise`, `synthesise`. Falls back to `analyse` if no keywords match. The classification is used by the triage endpoint's three-signal model and is included in `composition_fitness` responses.
 
 Implementation: keyword heuristic (no LLM call). The classifier runs before `find_similar()` in the composition pipeline.
 
@@ -546,7 +531,7 @@ Uses Python's standard library `smtplib` with TLS. Configured in `agency.toml [s
 | API framework | FastAPI |
 | Storage | SQLite |
 | Vector storage | sqlite-vec |
-| Embedding model | `MongoDB/mdbr-leaf-mt-asym` (asymmetric, local, CPU-only) |
+| Embedding model | `sentence-transformers all-MiniLM-L6-v2` (local, CPU-only) |
 | JWT library | `pyjwt` with `cryptography` backend (EdDSA signing) |
 | MCP | `mcp>=1.26.0` (Anthropic MCP Python SDK) |
 | Deployment | pip install (`agency-engine`) |
@@ -629,5 +614,3 @@ v1.2.4 is additive with these exceptions:
 13. **Starter CSV gains columns:** `parent_ids`, `generation`, `created_by`. Existing CSV parsers that ignore unknown columns are unaffected. Run `agency primitives update` after upgrade.
 
 14. **New dependency: `packaging>=21.0`.** Required for version comparison in status file notifications.
-
-15. **Embedding model changed from `all-MiniLM-L6-v2` (384 dims) to `MongoDB/mdbr-leaf-mt-asym` (1024 dims).** All stored primitive embeddings are regenerated automatically on first server startup. Download size increases from ~80MB to ~1.4GB on first install. The auto-migration runs before the server accepts connections — no manual step required.

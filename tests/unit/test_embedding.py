@@ -5,7 +5,7 @@ def test_embed_returns_list_of_floats():
     vec = embed("this is a test role component")
     assert isinstance(vec, list)
     assert all(isinstance(x, float) for x in vec)
-    assert len(vec) == 1024  # MongoDB/mdbr-leaf-mt-asym dimension
+    assert len(vec) == 384  # all-MiniLM-L6-v2 dimension
 
 
 def test_similar_strings_have_high_similarity():

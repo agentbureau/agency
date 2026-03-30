@@ -287,8 +287,8 @@ def _assign_via_embedding(
     task_description = task.get("task_description", "")
     task_type = classify_task_type(task_description)
 
-    role_results = find_similar_with_type_filter(
-        db, "role_components", task_description, limit=3, task_type=task_type,
+    role_results = find_similar(
+        db, "role_components", task_description, limit=3, scope="task",
     )
     if not role_results:
         raise PrimitiveStoreEmpty("No role components in primitive store")
@@ -296,15 +296,15 @@ def _assign_via_embedding(
     raw_role_candidates = list(role_results)
     role_results = _apply_relevance_floor(role_results)
 
-    outcome_results = find_similar_with_type_filter(
-        db, "desired_outcomes", task_description, limit=1, task_type=task_type,
+    outcome_results = find_similar(
+        db, "desired_outcomes", task_description, limit=1, scope="task",
     )
     _apply_skill_boost(outcome_results, skills)
     raw_outcome_candidates = list(outcome_results)
     outcome_results = _apply_relevance_floor(outcome_results)
 
-    tradeoff_results = find_similar_with_type_filter(
-        db, "trade_off_configs", task_description, limit=1, task_type=task_type,
+    tradeoff_results = find_similar(
+        db, "trade_off_configs", task_description, limit=1, scope="task",
     )
     _apply_skill_boost(tradeoff_results, skills)
     raw_tradeoff_candidates = list(tradeoff_results)
