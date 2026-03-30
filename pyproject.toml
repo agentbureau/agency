@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agency-engine"
-version = "1.2.4"
+version = "1.2.4.1"
 description = "Compose, assign, evaluate, and evolve AI agents from reusable primitives."
 readme = "README.md"
 license = "Elastic-2.0"
