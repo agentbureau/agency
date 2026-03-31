@@ -1,4 +1,4 @@
-# Agency — specification v1.2.4.1
+# Agency — specification v1.2.4.2
 *2026-03-30*
 
 ## Setting up Agency for the first time
