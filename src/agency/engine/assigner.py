@@ -245,33 +245,6 @@ def _assign_via_llm(
     return None
 
 
-def find_similar_with_type_filter(
-    db: sqlite3.Connection, table: str, query: str,
-    limit: int, task_type: str,
-) -> list[dict]:
-    """Two-pass retrieval: type-filtered first, full-pool fallback for unfilled slots."""
-    type_keywords = TASK_TYPE_KEYWORDS.get(task_type, [])
-    type_filtered = find_similar(
-        db, table, query, limit=limit,
-        keyword_filter=type_keywords if type_keywords else None,
-    )
-    for r in type_filtered:
-        r["retrieval_pass"] = "type_filtered"
-
-    unfilled = limit - len(type_filtered)
-    if unfilled <= 0:
-        return type_filtered
-
-    already_selected_ids = {r["id"] for r in type_filtered}
-    fallback = find_similar(
-        db, table, query, limit=unfilled,
-        exclude_ids=already_selected_ids,
-    )
-    for r in fallback:
-        r["retrieval_pass"] = "full_pool"
-
-    return type_filtered + fallback
-
 
 def _assign_via_embedding(
     db: sqlite3.Connection, task_id: str, task: dict,

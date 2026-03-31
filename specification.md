@@ -1,4 +1,4 @@
-# Agency — specification v1.2.4
+# Agency — specification v1.2.4.1
 *2026-03-30*
 
 ## Setting up Agency for the first time
@@ -425,7 +425,7 @@ The `primitive_performance` table stores running aggregates per primitive:
 
 ### Assignment candidates
 
-The `assignment_candidates` table stores all candidates considered during each assignment, with similarity scores, selection flags, and retrieval pass markers (`type_filtered` or `full_pool`). Enables retrospective analysis of selection strategies and pool health diagnostics.
+The `assignment_candidates` table stores all candidates considered during each assignment, with similarity scores and selection flags. Enables retrospective analysis of selection strategies and pool health diagnostics.
 
 ### Dimensional evaluation
 

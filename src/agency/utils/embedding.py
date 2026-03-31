@@ -68,9 +68,8 @@ def verify_and_fix_embeddings(db) -> None:
         return
 
     print(
-        "\nWe've updated to a more effective embedding model, and we're "
-        "re-embedding your pool of primitives. This is a one-time operation "
-        "that will take a few seconds.\n"
+        "\nEmbedding model has changed. Re-embedding your pool of primitives. "
+        "This is a one-time operation that will take a few seconds.\n"
     )
     logger = logging.getLogger(__name__)
     logger.warning(
