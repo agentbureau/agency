@@ -1,6 +1,6 @@
 import sys
 
-__version__ = "1.2.4.1"
+__version__ = "1.2.4.2"
 
 if sys.version_info < (3, 13):
     raise RuntimeError(

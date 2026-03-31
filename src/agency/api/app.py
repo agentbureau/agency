@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agency", version="1.2.4.1", lifespan=lifespan)
+    app = FastAPI(title="Agency", version="1.2.4.2", lifespan=lifespan)
 
     @app.middleware("http")
     async def jwt_middleware(request, call_next):
