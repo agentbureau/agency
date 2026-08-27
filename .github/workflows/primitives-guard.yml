@@ -1,0 +1,66 @@
+# Primitives guard — defence in depth
+#
+# primitives/starter.csv is fetched directly by `agency primitives update`,
+# so whatever lands on main is served to every install. This mirrors the
+# local pre-commit hook and runs on every push and pull request.
+#
+# Blocks: rows whose field count differs from the header; a net drop in row
+# count against the previous commit (a clobber); new duplicate descriptions;
+# empty or invalid required fields.
+
+name: Primitives Guard
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'primitives/starter.csv'
+      - '.github/scripts/validate_primitives.py'
+      - '.github/workflows/primitives-guard.yml'
+  pull_request:
+    branches: ['**']
+    paths:
+      - 'primitives/starter.csv'
+      - '.github/scripts/validate_primitives.py'
+      - '.github/workflows/primitives-guard.yml'
+
+jobs:
+  primitives-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Extract baseline (previous version of the CSV)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="$(git rev-parse HEAD~1 2>/dev/null || true)"
+          fi
+          if [ -n "${BASE}" ] && git cat-file -e "${BASE}:primitives/starter.csv" 2>/dev/null; then
+            git show "${BASE}:primitives/starter.csv" > /tmp/baseline.csv
+            echo "BASELINE=/tmp/baseline.csv" >> "$GITHUB_ENV"
+          else
+            echo "No baseline available (first commit or file is new)."
+            echo "BASELINE=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate starter.csv
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${BASELINE}" ]; then
+            python3 .github/scripts/validate_primitives.py primitives/starter.csv --baseline "${BASELINE}"
+          else
+            python3 .github/scripts/validate_primitives.py primitives/starter.csv
+          fi
