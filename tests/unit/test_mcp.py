@@ -11,6 +11,8 @@ from unittest.mock import patch, MagicMock
 # ---------------------------------------------------------------------------
 
 from agency.cli.mcp import (
+    _autostart_enabled,
+    _ensure_server,
     _read_toml_config,
     _resolve_project_id,
     _maybe_inject_onboarding,
@@ -644,3 +646,115 @@ def test_onboarding_preserves_original_on_bad_json(tmp_path, monkeypatch):
     bad_json = "not valid json {"
     output = _maybe_inject_onboarding(bad_json)
     assert output == bad_json
+
+
+# ---------------------------------------------------------------------------
+# Auto-start opt-out (AGENCY_MCP_AUTOSTART / [mcp] autostart)
+# ---------------------------------------------------------------------------
+
+def _write_toml(tmp_path, monkeypatch, body: str) -> None:
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))
+    (tmp_path / "agency.toml").write_text(body)
+
+
+def test_autostart_enabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, '[server]\nhost = "127.0.0.1"\nport = 8000\n')
+    assert _autostart_enabled() is True
+
+
+def test_autostart_enabled_when_no_toml(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    monkeypatch.setenv("AGENCY_STATE_DIR", str(tmp_path))  # no agency.toml here
+    assert _autostart_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off", " off "])
+def test_autostart_env_disables(tmp_path, monkeypatch, value):
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = true\n")
+    monkeypatch.setenv("AGENCY_MCP_AUTOSTART", value)
+    assert _autostart_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "ON"])
+def test_autostart_env_enables_over_toml(tmp_path, monkeypatch, value):
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = false\n")
+    monkeypatch.setenv("AGENCY_MCP_AUTOSTART", value)
+    assert _autostart_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "   "])
+def test_autostart_env_unrecognised_warns_and_falls_back_to_toml(tmp_path, monkeypatch, capsys, value):
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = false\n")
+    monkeypatch.setenv("AGENCY_MCP_AUTOSTART", value)
+    assert _autostart_enabled() is False
+    err = capsys.readouterr().err
+    assert f"Warning: ignoring AGENCY_MCP_AUTOSTART={value!r}: expected true or false" in err
+    assert "stays" not in err  # the warning must not claim the final state
+
+
+def test_autostart_toml_disables(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = false\n")
+    assert _autostart_enabled() is False
+
+
+@pytest.mark.parametrize("literal", ['"false"', '"off"', '"0"'])
+def test_autostart_toml_string_false_disables(tmp_path, monkeypatch, literal):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, f"[mcp]\nautostart = {literal}\n")
+    assert _autostart_enabled() is False
+
+
+@pytest.mark.parametrize("literal,shown", [('"maybe"', "'maybe'"), ("3", "3"), ("[false]", "[False]"), ('""', "''")])
+def test_autostart_toml_unrecognised_value_warns_and_keeps_default(tmp_path, monkeypatch, capsys, literal, shown):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, f"[mcp]\nautostart = {literal}\n")
+    assert _autostart_enabled() is True
+    err = capsys.readouterr().err
+    assert f"Warning: ignoring [mcp] autostart = {shown} in agency.toml: expected true or false" in err
+
+
+def test_autostart_toml_mcp_not_a_table_warns_and_keeps_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, "mcp = false\n")
+    assert _autostart_enabled() is True
+    assert "Warning: ignoring [mcp] = False in agency.toml: expected a table with an autostart value" in capsys.readouterr().err
+
+
+def test_autostart_valid_values_do_not_warn(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = false\n")
+    assert _autostart_enabled() is False
+    monkeypatch.setenv("AGENCY_MCP_AUTOSTART", "1")
+    assert _autostart_enabled() is True
+    assert capsys.readouterr().err == ""
+
+
+def test_ensure_server_does_not_spawn_when_disabled(tmp_path, monkeypatch, capsys):
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = false\n")
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    import agency.cli.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "_server_proc", None)
+    with patch("agency.utils.autostart.auto_start_server") as spawn:
+        _ensure_server("http://127.0.0.1:8000")
+    spawn.assert_not_called()
+    assert mcp_mod._server_proc is None
+    err = capsys.readouterr().err
+    assert "Auto-start disabled" in err
+    assert "http://127.0.0.1:8000" in err
+
+
+def test_ensure_server_spawns_when_enabled(tmp_path, monkeypatch):
+    _write_toml(tmp_path, monkeypatch, "[mcp]\nautostart = true\n")
+    monkeypatch.delenv("AGENCY_MCP_AUTOSTART", raising=False)
+    import agency.cli.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "_server_proc", None)
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+    with patch("agency.utils.autostart.auto_start_server", return_value=fake_proc) as spawn, \
+         patch("agency.cli.mcp.atexit.register"):
+        _ensure_server("http://127.0.0.1:8000")
+    spawn.assert_called_once_with(host="127.0.0.1", port=8000)
+    assert mcp_mod._server_proc is fake_proc
+    monkeypatch.setattr(mcp_mod, "_server_proc", None)
