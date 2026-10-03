@@ -279,10 +279,72 @@ def _write_toml_default_id(project_id: str) -> None:
 
 _server_proc = None
 
+AUTOSTART_ENV = "AGENCY_MCP_AUTOSTART"
+_AUTOSTART_FALSE = {"0", "false", "no", "off"}
+_AUTOSTART_TRUE = {"1", "true", "yes", "on"}
+
+
+def _autostart_enabled() -> bool:
+    """Whether this MCP process may spawn `agency serve` itself.
+
+    AGENCY_MCP_AUTOSTART=0|false|no|off disables it and 1|true|yes|on enables
+    it. Otherwise `[mcp] autostart` in agency.toml decides: a TOML boolean,
+    or one of the same words as a string. Any other value is reported on
+    stderr and skipped: an unusable environment value falls through to
+    agency.toml, and an unusable agency.toml value leaves the default, true. Disable it when launchd or systemd owns
+    `agency serve`: the MCP then never competes with the managed server for
+    the port and reports a connection error while it is down.
+    """
+    raw = os.environ.get(AUTOSTART_ENV)
+    if raw is not None:
+        word = raw.strip().lower()
+        if word in _AUTOSTART_FALSE:
+            return False
+        if word in _AUTOSTART_TRUE:
+            return True
+        _warn_autostart(f"{AUTOSTART_ENV}={raw!r}")
+    mcp_cfg = _read_toml_config().get("mcp", {})
+    if not isinstance(mcp_cfg, dict):
+        print(
+            f"Warning: ignoring [mcp] = {mcp_cfg!r} in agency.toml: "
+            f"expected a table with an autostart value",
+            file=sys.stderr,
+        )
+        return True
+    value = mcp_cfg.get("autostart", True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _AUTOSTART_FALSE:
+            return False
+        if word in _AUTOSTART_TRUE:
+            return True
+    _warn_autostart(f"[mcp] autostart = {value!r} in agency.toml")
+    return True
+
+
+def _warn_autostart(what: str) -> None:
+    print(
+        f"Warning: ignoring {what}: expected true or false (or 1/0, yes/no, on/off)",
+        file=sys.stderr,
+    )
+
 
 def _ensure_server(base_url: str) -> None:
-    """Start Agency server if not reachable. Registers cleanup on exit."""
+    """Start Agency server if not reachable. Registers cleanup on exit.
+
+    Does nothing when auto-start is disabled (see _autostart_enabled); the
+    caller then surfaces the normal connection error.
+    """
     global _server_proc
+    if not _autostart_enabled():
+        print(
+            f"Auto-start disabled ({AUTOSTART_ENV} or [mcp] autostart); "
+            f"expecting an externally managed agency serve at {base_url}",
+            file=sys.stderr,
+        )
+        return
     if _server_proc is not None:
         if _server_proc.poll() is None:
             return  # Still running

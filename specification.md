@@ -135,6 +135,9 @@ instance_id = "uuid-v7"
 host = "127.0.0.1"
 port = 8000
 
+[mcp]                            # optional; not written by `agency init`
+autostart = true                 # false when launchd/systemd owns `agency serve`
+
 [assigner]
 strategy = "embedding"           # or "llm"
 composition_fitness_floor = 0.39 # optional override (v1.2.4)
@@ -488,6 +491,8 @@ agency token list
 ### MCP auto-start
 
 When Claude Code invokes an Agency MCP tool, the MCP server checks if `agency serve` is running (health check). If not, it spawns the server automatically. The user does not need a terminal tab running `agency serve`.
+
+Auto-start can be turned off for installations where a service manager (launchd, systemd) owns `agency serve`. Set `AGENCY_MCP_AUTOSTART=0` in the MCP's environment, or `autostart = false` under `[mcp]` in `agency.toml`; the environment variable wins when both are set (`1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off` are recognised; any other value is reported on stderr and skipped, so an unusable environment value falls through to `agency.toml` and an unusable `agency.toml` value leaves the default). With auto-start off the MCP never spawns a server, at startup or before a tool call, and returns the usual connection error while the managed server is down. Without it, several MCP processes and a supervised `agency serve` can all try to bind the same port at login, and the supervised one is relaunched on every failed bind.
 
 ### Non-interactive flags
 
